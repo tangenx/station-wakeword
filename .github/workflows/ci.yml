@@ -1,0 +1,69 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "needs gofmt:"; echo "$unformatted"; exit 1
+          fi
+
+      # arm64 is the station target and checks the NEON assembly (asmdecl);
+      # amd64 covers the portable kernel.
+      - name: go vet
+        run: |
+          GOOS=linux GOARCH=arm64 go vet ./...
+          GOOS=linux GOARCH=amd64 go vet ./...
+
+      - name: Test (amd64, portable kernel)
+        run: go test ./...
+
+      - name: Install qemu
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+
+      # The station runs the arm64 assembly; run the ONNX parity tests on it
+      # under emulation.
+      - name: Test (arm64 via qemu, NEON kernel)
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go test -exec qemu-aarch64-static ./...
+
+      - name: Build station binary
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/wakeword ./cmd/wakeword
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # staticcheck tracks the newest Go; the module's minimum is tested above.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The station side runs BusyBox ash, so lint as POSIX sh.
+      - name: shellcheck
+        run: shellcheck --shell=sh build.sh package.sh install.sh uninstall.sh lib.sh station/S97wakeword

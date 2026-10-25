@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Свои слова активации</title>
+<style>
+  :root { --bg:#f4f2fb; --card:#fff; --fg:#1d1b26; --muted:#6c6880; --accent:#7a55ff; --ok:#1f9d55; --bad:#d64545; --line:#e4e0f2; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14131a; --card:#1e1c27; --fg:#ece9f6; --muted:#9a95ad; --line:#2f2c3b; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 0 0 10px; }
+  .muted { color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin: 14px 0; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 10px; padding: 8px 14px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.big { font-size: 18px; padding: 14px 22px; }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  input[type=text] { font: inherit; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); min-width: 220px; }
+  .pill { display:inline-flex; gap:6px; align-items:center; padding: 3px 10px; border-radius: 99px; font-size: 13px; background: var(--bg); border:1px solid var(--line); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); }
+  .dot.on { background: var(--ok); }
+  .meter { position: relative; height: 10px; background: var(--bg); border-radius: 6px; overflow: hidden; border:1px solid var(--line); }
+  .meter > i { position:absolute; left:0; top:0; bottom:0; background: var(--accent); transition: width .15s; }
+  .meter > b { position:absolute; top:-2px; bottom:-2px; width:2px; background: var(--fg); opacity:.6; }
+  .level { width: 120px; }
+  .stats { font-size: 13px; color: var(--muted); }
+  .takes { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+  .take { display:inline-flex; gap:4px; align-items:center; padding:4px 8px; border-radius:8px; background:var(--bg); border:1px solid var(--line); font-size:13px; }
+  .take button { padding: 0 6px; border: none; background: none; }
+  .say { font-size: 28px; font-weight: 700; color: var(--accent); min-height: 40px; }
+  .msg { min-height: 22px; }
+  .msg.bad { color: var(--bad); }
+  .msg.ok { color: var(--ok); }
+  .steps { display:grid; gap: 14px; }
+  .step { border-left: 3px solid var(--line); padding-left: 12px; }
+  .step.done { border-color: var(--ok); }
+  .step.cur { border-color: var(--accent); }
+  .reading { background: var(--bg); border-radius: 10px; padding: 10px 12px; font-size: 16px; }
+  table { width:100%; border-collapse: collapse; font-size: 14px; }
+  td { padding: 6px 4px; border-top: 1px solid var(--line); }
+  input[type=range] { width: 160px; accent-color: var(--accent); }
+  .switch { display:inline-flex; gap:6px; align-items:center; cursor:pointer; }
+  .station { font-size: 13px; font-weight: 600; color: var(--accent); letter-spacing: .02em; min-height: 18px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="row">
+    <div class="grow">
+      <div class="station" id="station"></div>
+      <h1>Свои слова активации</h1>
+      <div class="muted">Скажите своё слово — станция начнёт слушать, как после «Алиса».</div>
+    </div>
+    <span class="pill" title="Звук с микрофонов станции после шумоподавления"><span id="adot" class="dot"></span><span id="atext">нет звука</span><span class="meter level"><i id="alevel"></i></span></span>
+  </div>
+
+  <div id="words"></div>
+
+  <div class="card" id="newcard">
+    <div class="row">
+      <div class="grow"><h2>Новое слово</h2><div class="muted">Запись идёт микрофонами станции — говорите так же, как будете звать её потом.</div></div>
+      <button class="primary" id="newbtn">Добавить слово</button>
+    </div>
+  </div>
+
+  <div class="card" id="wizard" hidden>
+    <div class="row"><h2 class="grow">Слово «<span id="wname"></span>»</h2><button id="wcancel">Отмена</button></div>
+    <div class="steps">
+      <div class="step" id="s-ambient">
+        <b>1. Тишина в комнате</b>
+        <div class="muted">8 секунд станция слушает обычный фон комнаты. Не говорите в это время (телевизор и музыку оставьте, если они обычно играют).</div>
+        <div class="row" style="margin-top:8px"><button id="ambbtn">Записать фон</button><span id="ambmsg" class="msg"></span></div>
+      </div>
+      <div class="step" id="s-takes">
+        <b>2. Произнесите слово</b>
+        <div class="muted">Нажмите «Записать» и после надписи «Говорите!» скажите слово один раз. Нужно минимум <span id="mintakes">6</span>, лучше 10–15: с разных мест комнаты, громче и тише, разными людьми.</div>
+        <div class="row" style="margin-top:8px"><button class="primary big" id="takebtn">Записать</button><div class="say grow" id="say"></div></div>
+        <div class="row"><span id="takemsg" class="msg"></span><button id="lastbtn" data-play="/api/enroll/take/last" title="Послушать последнюю запись" hidden>▶ послушать</button></div>
+        <div class="takes" id="takes"></div>
+      </div>
+      <div class="step" id="s-speech">
+        <b>3. Обычная речь (по желанию)</b>
+        <div class="muted">20 секунд прочитайте вслух текст ниже. Так станция научится не путать слово с вашей обычной речью.</div>
+        <div class="reading" style="margin-top:8px">Сегодня обещали тёплую погоду, поэтому мы решили погулять в парке. Вечером нужно купить хлеб, молоко и что-нибудь к чаю. Позвоню маме и спрошу, как у неё дела. Завтра рано вставать, так что лягу пораньше и почитаю книгу.</div>
+        <div class="row" style="margin-top:8px"><button id="speechbtn">Читать 20 секунд</button><span id="speechmsg" class="msg"></span></div>
+      </div>
+      <div class="step" id="s-train">
+        <b>4. Обучение</b>
+        <div class="muted">Модель обучается прямо на станции, около 2–3 минут. Страницу можно закрыть.</div>
+        <div class="row" style="margin-top:8px"><button class="primary" id="trainbtn">Обучить</button><span id="trainmsg" class="msg"></span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="traincard" hidden>
+    <h2>Обучение «<span id="tword"></span>»</h2>
+    <div class="meter"><i id="tbar"></i></div>
+    <div class="stats" id="tstage" style="margin-top:6px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Последние срабатывания</h2>
+    <div class="muted" id="nohits">Пока не было. Скажите слово — здесь появится запись.</div>
+    <table id="hits"></table>
+  </div>
+
+  <div class="row muted" style="font-size:13px">
+    <span class="grow">Если станция откликнулась зря — нажмите «Ложное» у записи, а потом «Переобучить» у слова.</span>
+    <button id="listenbtn" title="Станция начнёт слушать, как по слову">Проверить: «слушаю»</button>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let state = null, busy = false;
+
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: body ? {"Content-Type": "application/json"} : {}, body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function pct(x) { return Math.round(x * 100) + "%"; }
+function msg(el, text, kind) { el.textContent = text || ""; el.className = "msg " + (kind || ""); }
+
+function renderWords(s) {
+  const box = $("words");
+  const keep = document.activeElement && document.activeElement.type === "range";
+  if (keep) { // do not rebuild under a dragged slider; just move meters
+    for (const w of s.words) {
+      const m = document.querySelector(`[data-meter="${w.id}"]`);
+      if (m) m.style.width = pct(w.score);
+    }
+    return;
+  }
+  box.innerHTML = s.words.map(w => {
+    const thr = Math.min(0.99, Math.max(0.05, w.threshold - w.sensitivity));
+    return `<div class="card">
+      <div class="row">
+        <h2 class="grow" style="margin:0">«${esc(w.name)}»</h2>
+        <label class="switch"><input type="checkbox" data-enable="${w.id}" ${w.enabled ? "checked" : ""}> включено</label>
+      </div>
+      <div class="meter" style="margin:12px 0 6px" title="Уверенность сейчас; отметка — порог срабатывания">
+        <i data-meter="${w.id}" style="width:${pct(w.score)}"></i><b style="left:${pct(thr)}"></b></div>
+      <div class="row">
+        <span class="stats grow">${w.takes} записей · проверка: узнаёт ${pct(w.recall)} · ложных ≈ ${w.false_per_h.toFixed(1)}/час${w.false_clips ? ` · отмечено ложных: ${w.false_clips}` : ""}</span>
+        <span class="stats">реже</span><input type="range" min="-0.3" max="0.3" step="0.05" value="${w.sensitivity}" data-sens="${w.id}"><span class="stats">чаще</span>
+      </div>
+      ${(w.notes || []).length ? `<div class="stats">${w.notes.map(esc).join("<br>")}</div>` : ""}
+      <div class="row" style="margin-top:10px">
+        <button data-more="${esc(w.name)}">Дозаписать</button>
+        <button data-retrain="${w.id}">Переобучить</button>
+        <span class="grow"></span>
+        <button class="danger" data-del="${w.id}" data-name="${esc(w.name)}">Удалить</button>
+      </div></div>`;
+  }).join("");
+}
+
+function renderHits(s) {
+  $("nohits").hidden = s.hits.length > 0;
+  $("hits").innerHTML = s.hits.map(h => `<tr>
+    <td>${new Date(h.at).toLocaleTimeString()}</td><td>«${esc(h.name)}»</td><td>${h.score.toFixed(2)}</td>
+    <td>${h.error ? `<span class="msg bad">${esc(h.error)}</span>` : (h.fired ? "станция слушала" : "")}</td>
+    <td><button data-play="/api/hits/${h.id}">▶</button> <button data-false="${h.id}">Ложное</button></td></tr>`).join("");
+}
+
+function renderEnroll(s) {
+  const e = s.enroll;
+  $("wizard").hidden = !e;
+  $("newcard").hidden = !!e || s.train.active;
+  if (!e) return;
+  $("wname").textContent = e.name;
+  $("mintakes").textContent = e.min_takes;
+  $("s-ambient").className = "step " + (e.has_ambient ? "done" : "cur");
+  $("s-takes").className = "step " + (e.takes.length >= e.min_takes ? "done" : (e.has_ambient ? "cur" : ""));
+  $("s-speech").className = "step " + (e.speech_secs > 0 ? "done" : "");
+  $("s-train").className = "step " + (e.takes.length >= e.min_takes && e.has_ambient ? "cur" : "");
+  $("trainbtn").disabled = busy || e.takes.length < e.min_takes || !e.has_ambient;
+  if (e.has_ambient && !$("ambmsg").textContent) msg($("ambmsg"), "записано", "ok");
+  if (e.speech_secs > 0 && !$("speechmsg").textContent) msg($("speechmsg"), "записано", "ok");
+  $("takes").innerHTML = e.takes.map((d, i) => `<span class="take">#${i + 1} ${d.toFixed(2)} с
+     <button title="Послушать" data-play="/api/enroll/take/${i}">▶</button>
+     <button title="Удалить" data-deltake="${i}">✕</button></span>`).join("");
+  for (const b of ["ambbtn", "takebtn", "speechbtn"]) $(b).disabled = busy;
+}
+
+function renderTrain(s) {
+  const t = s.train;
+  $("traincard").hidden = !t.active && !t.error;
+  if (!t.active && !t.error) return;
+  $("tword").textContent = t.name || t.word;
+  const stages = { load: [0, 0.02], embed: [0.02, 0.45], train: [0.45, 0.95], calibrate: [0.95, 1] };
+  const [a, b] = stages[t.stage] || [0, 1];
+  $("tbar").style.width = pct(a + (b - a) * t.frac);
+  const names = { load: "загрузка", embed: "обработка записей", train: "обучение", calibrate: "проверка" };
+  $("tstage").textContent = t.error ? "Ошибка: " + t.error : (names[t.stage] || t.stage) + "…";
+}
+
+async function refresh() {
+  try {
+    const s = await api("GET", "/api/state");
+    const prev = state; state = s;
+    if ($("station").textContent !== s.station) {
+      $("station").textContent = s.station;
+      document.title = s.station ? `${s.station} — свои слова активации` : "Свои слова активации";
+    }
+    $("adot").className = "dot" + (s.audio.ok ? " on" : "");
+    $("atext").textContent = s.audio.ok ? s.audio.channel : "нет звука";
+    $("alevel").style.width = pct(Math.max(0, Math.min(1, (s.audio.level + 80) / 70)));
+    renderWords(s); renderHits(s); renderEnroll(s); renderTrain(s);
+    if (prev && prev.train.active && !s.train.active && !s.train.error) {
+      msg($("trainmsg"), "");
+    }
+  } catch (e) {
+    $("adot").className = "dot"; $("atext").textContent = "нет связи";
+  }
+}
+setInterval(refresh, 300);
+refresh();
+
+async function run(btn, fn) {
+  if (busy) return;
+  busy = true; if (btn) btn.disabled = true;
+  try { await fn(); } catch (e) { alert(e.message); }
+  finally { busy = false; if (btn) btn.disabled = false; refresh(); }
+}
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+$("newbtn").onclick = () => run(null, async () => {
+  const name = prompt("Какое слово будет звать станцию? Например: Джарвис, Компьютер, Станция");
+  if (!name) return;
+  msg($("ambmsg"), ""); msg($("speechmsg"), ""); msg($("takemsg"), ""); $("say").textContent = "";
+  await api("POST", "/api/enroll/start", { name: name.trim() });
+});
+$("wcancel").onclick = () => run(null, async () => { if (confirm("Бросить запись этого слова?")) await api("POST", "/api/enroll/cancel"); });
+$("ambbtn").onclick = () => run($("ambbtn"), async () => {
+  msg($("ambmsg"), "тихо… 8 секунд");
+  const r = await api("POST", "/api/enroll/ambient");
+  msg($("ambmsg"), `записано (фон ${r.level.toFixed(0)} дБ)`, "ok");
+});
+$("takebtn").onclick = () => run($("takebtn"), async () => {
+  msg($("takemsg"), ""); $("lastbtn").hidden = true;
+  for (const n of ["3", "2", "1"]) { $("say").textContent = n + "…"; await sleep(500); }
+  $("say").textContent = "Говорите!";
+  try {
+    const r = await api("POST", "/api/enroll/take");
+    msg($("takemsg"), r.ok ? `отлично: ${r.duration.toFixed(2)} с · всего ${r.takes}` : r.message, r.ok ? "ok" : "bad");
+  } finally { $("say").textContent = ""; $("lastbtn").hidden = false; }
+});
+$("speechbtn").onclick = () => run($("speechbtn"), async () => {
+  msg($("speechmsg"), "читайте вслух… 20 секунд");
+  await api("POST", "/api/enroll/speech?secs=20");
+  msg($("speechmsg"), "записано", "ok");
+});
+$("trainbtn").onclick = () => run($("trainbtn"), async () => {
+  await api("POST", "/api/enroll/train");
+  msg($("trainmsg"), "обучение началось");
+});
+$("listenbtn").onclick = () => run($("listenbtn"), () => api("POST", "/api/listen"));
+
+document.addEventListener("change", (ev) => {
+  const t = ev.target;
+  if (t.dataset.enable) run(null, () => api("POST", "/api/words/" + t.dataset.enable, { enabled: t.checked }));
+  if (t.dataset.sens) run(null, async () => { await api("POST", "/api/words/" + t.dataset.sens, { sensitivity: parseFloat(t.value) }); t.blur(); });
+});
+document.addEventListener("click", (ev) => {
+  const t = ev.target.closest("button");
+  if (!t) return;
+  const ds = t.dataset;
+  if (ds.play) new Audio(ds.play + "?t=" + Date.now()).play();
+  if (ds.deltake) run(null, () => api("DELETE", "/api/enroll/take/" + ds.deltake));
+  if (ds.false) run(null, () => api("POST", `/api/hits/${ds.false}/false`));
+  if (ds.retrain) run(null, () => api("POST", `/api/words/${ds.retrain}/retrain`));
+  if (ds.more) run(null, () => api("POST", "/api/enroll/start", { name: ds.more }));
+  if (ds.del && confirm(`Удалить слово «${ds.name}» со всеми записями?`)) run(null, () => api("DELETE", "/api/words/" + ds.del));
+});
+</script>
+</body>
+</html>

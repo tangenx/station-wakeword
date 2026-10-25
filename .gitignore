@@ -1,0 +1,4 @@
+dist/
+.DS_Store
+# Research notes (IPC protocol, stock spotter): kept locally, not shipped.
+docs/

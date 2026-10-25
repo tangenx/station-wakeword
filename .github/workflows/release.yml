@@ -1,0 +1,81 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "version for a manual build (artifacts only, no release)"
+        default: dev
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install numpy (negatives builder)
+        run: pip install numpy
+
+      # negatives.bin is ~17 MB fetched by byte ranges from Hugging Face; it
+      # only changes when the builder does.
+      - uses: actions/cache@v4
+        with:
+          path: dist/negatives.bin
+          key: negatives-${{ hashFiles('tools/build_negatives.py') }}
+
+      - name: Test
+        run: go test ./...
+
+      - name: Package (.yap + install bundle)
+        run: sh package.sh "$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wakeword-${{ env.VERSION }}
+          path: |
+            dist/wakeword-*.yap
+            dist/wakeword-*.tar.gz
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/wakeword-*.yap
+            dist/wakeword-*.tar.gz
+          body: |
+            Свои слова активации для Яндекс Станции: слово записывается
+            микрофонами станции и обучается на ней же, настройка в браузере
+            на `http://<станция>:8780`. Нужен root (ADB или SSH).
+
+            **YAM** ([nyakokitsu/yam](https://github.com/nyakokitsu/yam)):
+            разрешите binary-пакеты в веб-интерфейсе yamd (`:8099`) и загрузите
+            там `wakeword-${{ github.ref_name }}.yap`, или:
+            ```sh
+            yam install wakeword-${{ github.ref_name }}.yap && yam service enable wakeword
+            ```
+
+            **Скриптом** (ssh или adb):
+            ```sh
+            tar -xzf wakeword-${{ github.ref_name }}.tar.gz && cd wakeword
+            STATION_IP=<ip станции> STATION_TRANSPORT=adb ./install.sh
+            ```
+
+            `negatives.bin` в пакетах — производная
+            [openwakeword_features](https://huggingface.co/datasets/davidscripka/openwakeword_features),
+            CC BY-NC-SA 4.0: только некоммерческое использование.
