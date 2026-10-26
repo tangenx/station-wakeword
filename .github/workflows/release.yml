@@ -16,10 +16,11 @@ jobs:
   release:
     runs-on: ubuntu-latest
     env:
+      # Strip the leading "v": the manifest version must be bare semver
+      # (the yapkg registry and yam compare versions without it).
       VERSION: ${{ inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -42,7 +43,12 @@ jobs:
         run: go test ./...
 
       - name: Package (.yap + install bundle)
-        run: sh package.sh "$VERSION"
+        run: |
+          # v0.1.0 -> 0.1.0: the registry and yam expect bare semver in the
+          # manifest, while release files are named after the tag.
+          VERSION="${VERSION#v}"
+          sh package.sh "$VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -69,7 +75,10 @@ jobs:
             ```sh
             yam install wakeword-${{ github.ref_name }}.yap && yam service enable wakeword
             ```
-
+            Пакет есть и в реестре [yapkg](https://github.com/nyakokitsu/yapkg):
+            ```sh
+            yam install wakeword && yam service enable wakeword
+            ```
             **Скриптом** (ssh или adb):
             ```sh
             tar -xzf wakeword-${{ github.ref_name }}.tar.gz && cd wakeword

@@ -63,6 +63,13 @@
 yam install wakeword-<версия>.yap && yam service enable wakeword
 ```
 
+Либо из реестра [yapkg](https://github.com/nyakokitsu/yapkg) (в него пакет
+отправлен pull request'ом):
+
+```sh
+yam install wakeword && yam service enable wakeword
+```
+
 Слова хранятся в `/data/wakeword` и переживают переустановку пакета.
 Остановить: `yam service disable wakeword`, удалить: `yam rm wakeword`.
 
