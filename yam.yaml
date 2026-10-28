@@ -1,0 +1,10 @@
+name: tangenx/wakeword
+version: 0.2.1
+license: Apache-2.0
+description: "Свои слова активации: слово записывается микрофонами станции и обучается на ней же, настройка в браузере"
+homepage: https://github.com/tangenx/station-wakeword
+targets: [yandexmicro, plum, yandexmini, yandexmini_2, bergamot, pickle, cucumber, yandexmidi, saturn, yandexstation, orion]
+files:
+  bin/wakeword: dist/wakeword
+  share/tangenx.wakeword/negatives.bin: dist/negatives.bin
+  share/tangenx.wakeword/S97wakeword: station/S97wakeword

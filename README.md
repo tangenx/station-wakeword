@@ -52,26 +52,31 @@
 
 ### Через YAM
 
-[YAM](https://github.com/nyakokitsu/yam) — пакетный менеджер для станций.
-Бинарные пакеты в нём по умолчанию запрещены: в веб-интерфейсе yamd
-(`http://<станция>:8099`) включите «Разрешить бинарники» (или
-`allow_plugin_binaries = true` в `/data/quazar/yam/data/settings.toml` и
-перезапуск yamd). Дальше — загрузите `wakeword-<версия>.yap` там же, в
-веб-интерфейсе, либо:
+YAM 0.2+ — пакетный менеджер, который ставит пакеты в `/data/yam/pkgs/`.
+Пакет этого проекта называется `tangenx/wakeword` и ставится локальным
+файлом (реестр v2 пока работает не для всех пакетов):
 
 ```sh
-yam install wakeword-<версия>.yap && yam service enable wakeword
+yam --platform <станция> install --yes wakeword-<версия>.yampkg
 ```
 
-Либо из реестра [yapkg](https://github.com/nyakokitsu/yapkg) (в него пакет
-отправлен pull request'ом):
+Платформа — id профиля из `docs/PLATFORMS.md` самого YAM: `yandexmidi` для
+Станции 2, `bergamot` для Мини 3, `yandexmicro`, `plum`, `yandexmini_2`,
+`cucumber`, `pickle`, `orion` и т.д. (`yam --platform ... list` покажет, что
+уже стоит.) Пакет кладёт бинарь, init-скрипт и `negatives.bin` (≈17 МБ) в
+`/data/yam/share/tangenx.wakeword/`; слова и настройки остаются в
+`/data/wakeword` и переживают переустановку пакета.
+
+YAM сам сервисы не запускает: автозапуск даёт init-скрипт
+`/etc/init.d/S97wakeword`, который кладётся пакетом. Если его нет (или
+после OTA), запустите вручную:
 
 ```sh
-yam install wakeword && yam service enable wakeword
+/etc/init.d/S97wakeword start
 ```
 
-Слова хранятся в `/data/wakeword` и переживают переустановку пакета.
-Остановить: `yam service disable wakeword`, удалить: `yam rm wakeword`.
+Удаление: `yam --platform <станция> remove tangenx/wakeword` (слова в
+`/data/wakeword` остаются).
 
 ### Скриптом (ssh или adb)
 

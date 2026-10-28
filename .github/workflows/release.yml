@@ -16,8 +16,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     env:
-      # Strip the leading "v": the manifest version must be bare semver
-      # (the yapkg registry and yam compare versions without it).
+      # v0.1.0 -> 0.1.0: yam and the registry expect bare semver, release
+      # files are named after the tag.
       VERSION: ${{ inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
@@ -42,10 +42,10 @@ jobs:
       - name: Test
         run: go test ./...
 
-      - name: Package (.yap + install bundle)
+      # package.sh builds the .yampkg with the official aarch64 yam binary
+      # under Docker qemu, installs it into a throwaway root and runs doctor.
+      - name: Package (.yampkg + install bundle)
         run: |
-          # v0.1.0 -> 0.1.0: the registry and yam expect bare semver in the
-          # manifest, while release files are named after the tag.
           VERSION="${VERSION#v}"
           sh package.sh "$VERSION"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
@@ -54,7 +54,7 @@ jobs:
         with:
           name: wakeword-${{ env.VERSION }}
           path: |
-            dist/wakeword-*.yap
+            dist/wakeword-*.yampkg
             dist/wakeword-*.tar.gz
 
       - name: Publish release
@@ -62,23 +62,21 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/wakeword-*.yap
+            dist/wakeword-*.yampkg
             dist/wakeword-*.tar.gz
           body: |
             Свои слова активации для Яндекс Станции: слово записывается
             микрофонами станции и обучается на ней же, настройка в браузере
             на `http://<станция>:8780`. Нужен root (ADB или SSH).
 
-            **YAM** ([nyakokitsu/yam](https://github.com/nyakokitsu/yam)):
-            разрешите binary-пакеты в веб-интерфейсе yamd (`:8099`) и загрузите
-            там `wakeword-${{ github.ref_name }}.yap`, или:
+            **YAM** (версия 0.2+, пакет `tangenx/wakeword`):
             ```sh
-            yam install wakeword-${{ github.ref_name }}.yap && yam service enable wakeword
+            yam --platform <yandexmidi|bergamot|...> install --yes wakeword-${{ github.ref_name }}.yampkg
+            /etc/init.d/S97wakeword start
             ```
-            Пакет есть и в реестре [yapkg](https://github.com/nyakokitsu/yapkg):
-            ```sh
-            yam install wakeword && yam service enable wakeword
-            ```
+            Профили платформ — в `docs/PLATFORMS.md` репозитория YAM. Слова
+            лежат в `/data/wakeword` и переживают переустановку пакета.
+
             **Скриптом** (ssh или adb):
             ```sh
             tar -xzf wakeword-${{ github.ref_name }}.tar.gz && cd wakeword

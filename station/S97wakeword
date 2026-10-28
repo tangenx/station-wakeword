@@ -1,14 +1,32 @@
 #!/bin/sh
-# wakeword: custom wake words. Starts the detector daemon at boot.
+# wakeword: start the custom wake-word daemon at boot.
 #
-# The daemon only reads the mic stream and asks Alice to listen over maind's
-# local IPC; it changes nothing in the firmware, so it may start before or
-# after S99quasar (it reconnects until maind is up). This script lives on the
-# read-only rootfs and disappears with an OTA update.
+# Works from either layout:
+#   /data/wakeword                      (install.sh: binary + negatives together)
+#   /data/yam/share/tangenx.wakeword    (yam package: binary in /data/yam/bin
+#   or the package payload dir, negatives here)
+# The daemon changes nothing in the firmware; it reconnects to maind until the
+# platform is up. This script lives on the read-only rootfs and disappears with
+# an OTA update.
 DIR=/data/wakeword
-BIN="$DIR/wakeword"
+YAM_SHARE=/data/yam/share/tangenx.wakeword
 PIDFILE=/tmp/wakeword.pid
 LOG=/tmp/wakeword.log
+
+# find_payload — locate the binary and negatives.bin.
+find_binary() {
+    for p in "$DIR/wakeword" /data/yam/bin/wakeword \
+        /data/yam/pkgs/tangenx/wakeword/*/files/bin/wakeword; do
+        [ -x "$p" ] && { echo "$p"; return; }
+    done
+}
+
+find_negatives() {
+    for p in /data/wakeword/negatives.bin "$YAM_SHARE/negatives.bin" \
+        /data/yam/pkgs/tangenx/wakeword/*/files/share/tangenx.wakeword/negatives.bin; do
+        [ -f "$p" ] && { echo "$p"; return; }
+    done
+}
 
 case "$1" in
     start)
@@ -16,11 +34,21 @@ case "$1" in
             echo "wakeword: already running"
             exit 0
         fi
-        [ -x "$BIN" ] || { echo "wakeword: no binary at $BIN"; exit 1; }
+        BIN=$(find_binary)
+        NEGATIVES=$(find_negatives)
+        if [ -z "$BIN" ]; then
+            echo "wakeword: no binary found in $DIR or /data/yam"
+            exit 1
+        fi
         # Low priority: Alice's own audio pipeline must never starve.
+        if [ -n "$NEGATIVES" ]; then
+            ARGS="run -data '$DIR' -negatives '$NEGATIVES'"
+        else
+            ARGS="run -data '$DIR'"
+        fi
         start-stop-daemon -S -b -m -p "$PIDFILE" -N 10 -x /bin/sh -- \
-            -c "exec '$BIN' run -data '$DIR' >> '$LOG' 2>&1"
-        echo "wakeword: started"
+            -c "eval exec '$BIN' $ARGS >> '$LOG' 2>&1"
+        echo "wakeword: started ($BIN)"
         ;;
     stop)
         [ -f "$PIDFILE" ] && start-stop-daemon -K -p "$PIDFILE" 2>/dev/null

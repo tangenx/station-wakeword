@@ -67,3 +67,18 @@ jobs:
       # The station side runs BusyBox ash, so lint as POSIX sh.
       - name: shellcheck
         run: shellcheck --shell=sh build.sh package.sh install.sh uninstall.sh lib.sh station/S97wakeword
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # package.sh packs a .yampkg with the official aarch64 yam binary, then
+      # installs it into a throwaway root and runs `yam doctor` (see
+      # package.sh: Docker provides qemu-user-static).
+      - name: Build .yampkg and install bundle, smoke test install
+        run: ./package.sh 9.9.9
