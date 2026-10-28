@@ -39,7 +39,9 @@ if [ ! -d "$profiles" ]; then
 fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/wakeword-pkg.XXXXXX")
-trap 'rm -rf "$work"' EXIT
+# yam runs as root inside the container, so it may leave files the invoking
+# user cannot delete; cleanup must never fail the build.
+trap 'rm -rf "$work" 2>/dev/null || true' EXIT
 mkdir -p "$work/sandbox"
 
 # run_yam ARGS... — run yam with --root set to $work/sandbox. On a Linux
