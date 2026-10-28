@@ -77,6 +77,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # negatives.bin builder needs numpy; no cache here, CI runs on PRs only.
+      - name: Install numpy
+        run: pip install numpy
+
       # package.sh packs with the official aarch64 yam binary under Docker;
       # this registers qemu-user-static so x86 runners can exec it.
       - uses: docker/setup-qemu-action@v3
