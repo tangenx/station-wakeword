@@ -53,17 +53,24 @@
 ### Через YAM
 
 YAM 0.2+ — пакетный менеджер, который ставит пакеты в `/data/yam/pkgs/`.
-Пакет этого проекта называется `tangenx/wakeword` и ставится локальным
-файлом (реестр v2 пока работает не для всех пакетов):
+Пакет этого проекта называется `tangenx/wakeword` и есть в реестре
+[repo.yse.wtf](https://repo.yse.wtf/):
 
 ```sh
-yam --platform <станция> install --yes wakeword-<версия>.yampkg
+yam --platform <профиль> install tangenx/wakeword
 ```
 
-Платформа — id профиля из `docs/PLATFORMS.md` самого YAM: `yandexmidi` для
-Станции 2, `bergamot` для Мини 3, `yandexmicro`, `plum`, `yandexmini_2`,
-`cucumber`, `pickle`, `orion` и т.д. (`yam --platform ... list` покажет, что
-уже стоит.) Пакет кладёт бинарь, init-скрипт и `negatives.bin` (≈17 МБ) в
+Профиль — id станции из `docs/PLATFORMS.md` самого YAM: `yandexmidi` для
+Станции 2, `bergamot` для Мини 3, а также `yandexmicro`, `plum`,
+`yandexmini_2`, `cucumber`, `pickle`, `orion`, `yandexstation`. (Бинарь
+aarch64, поэтому артефактов для armv7-станций — Стрит, JBL — нет.)
+Можно и локальным файлом из релиза на GitHub:
+
+```sh
+yam --platform <профиль> install --yes wakeword-<версия>-<профиль>.yampkg
+```
+
+Пакет кладёт бинарь, init-скрипт и `negatives.bin` (≈17 МБ) в
 `/data/yam/share/tangenx.wakeword/`; слова и настройки остаются в
 `/data/wakeword` и переживают переустановку пакета.
 
@@ -75,8 +82,11 @@ YAM сам сервисы не запускает: автозапуск даёт
 /etc/init.d/S97wakeword start
 ```
 
-Удаление: `yam --platform <станция> remove tangenx/wakeword` (слова в
+Удаление: `yam --platform <профиль> remove tangenx/wakeword` (слова в
 `/data/wakeword` остаются).
+
+Чтобы опубликовать новую версию самому — `tools/publish.sh`; что для этого
+нужно, описано в `docs/PUBLISHING.md` репозитория YAM.
 
 ### Скриптом (ssh или adb)
 
