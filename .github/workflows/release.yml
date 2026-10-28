@@ -43,7 +43,9 @@ jobs:
         run: go test ./...
 
       # package.sh builds the .yampkg with the official aarch64 yam binary
-      # under Docker qemu, installs it into a throwaway root and runs doctor.
+      # under Docker qemu; this registers qemu-user-static for x86 runners.
+      - uses: docker/setup-qemu-action@v3
+
       - name: Package (.yampkg + install bundle)
         run: |
           VERSION="${VERSION#v}"
