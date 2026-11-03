@@ -27,7 +27,7 @@ TOOLS="$root/tools/yam"
 # aarch64 Buildroot/quasar stations. armv7 stations (Street, JBL) cannot run
 # our binary, so they get no artifact.
 PLATFORMS="$*"
-[ -n "$PLATFORMS" ] || PLATFORMS="yandexmicro plum yandexmini yandexmini_2 bergamot pickle cucumber yandexmidi saturn yandexstation orion"
+[ -n "$PLATFORMS" ] || PLATFORMS="yandexmicro plum yandexmini yandexmini_2 bergamot pickle cucumber yandexmidi yandexstation orion"
 
 sh build.sh
 
