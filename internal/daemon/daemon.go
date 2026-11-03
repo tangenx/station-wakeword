@@ -33,15 +33,18 @@ type Options struct {
 
 // Settings is persisted in <data>/settings.json.
 type Settings struct {
-	Channel string                   `json:"channel"` // yio_audio channel
-	Gain    float64                  `json:"gain"`    // applied before everything else
-	DryRun  bool                     `json:"dry_run"` // log hits without waking Alice
-	Words   map[string]*WordSettings `json:"words"`
+	Channel   string                   `json:"channel"`     // yio_audio channel
+	Gain      float64                  `json:"gain"`        // applied before everything else
+	DryRun    bool                     `json:"dry_run"`     // never wake Alice; other actions still run
+	OnHitURL  string                   `json:"on_hit_url"`  // POST a hit as JSON
+	OnHitExec string                   `json:"on_hit_exec"` // run this script on a hit
+	Words     map[string]*WordSettings `json:"words"`
 }
 
 type WordSettings struct {
-	Enabled     bool    `json:"enabled"`
-	Sensitivity float32 `json:"sensitivity"` // threshold offset, -0.3..0.3
+	Enabled     bool     `json:"enabled"`
+	Sensitivity float32  `json:"sensitivity"` // threshold offset, -0.3..0.3
+	Actions     []string `json:"actions,omitempty"`
 }
 
 type word struct {
@@ -51,14 +54,15 @@ type word struct {
 
 // Hit is one detection, kept for the UI (with audio for false-alarm marking).
 type Hit struct {
-	ID    int       `json:"id"`
-	Word  string    `json:"word"`
-	Name  string    `json:"name"`
-	Score float32   `json:"score"`
-	At    time.Time `json:"at"`
-	Fired bool      `json:"fired"` // Alice was asked to listen
-	Error string    `json:"error,omitempty"`
-	audio []int16
+	ID      int       `json:"id"`
+	Word    string    `json:"word"`
+	Name    string    `json:"name"`
+	Score   float32   `json:"score"`
+	At      time.Time `json:"at"`
+	Fired   bool      `json:"fired"` // Alice was asked to listen
+	Actions []string  `json:"actions,omitempty"`
+	Error   string    `json:"error,omitempty"`
+	audio   []int16
 }
 
 type Daemon struct {
@@ -83,6 +87,8 @@ type Daemon struct {
 	enroll   *enrollment
 	train    trainState
 	name     cachedName
+	events   subscribers[hitEvent]
+	audio    subscribers[[]int16]
 }
 
 // cachedName is the app-given station name, re-read when maind rewrites
@@ -236,8 +242,6 @@ func (d *Daemon) Run(ctx context.Context) {
 }
 
 func (d *Daemon) onAudio(raw []int16) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
 	pcm := make([]int16, len(raw))
 	var e float64
 	for i, s := range raw {
@@ -245,6 +249,8 @@ func (d *Daemon) onAudio(raw []int16) {
 		pcm[i] = int16(max(-32768, min(32767, v)))
 		e += float64(pcm[i]) * float64(pcm[i])
 	}
+
+	d.mu.Lock()
 	d.level = 10*math.Log10(e/float64(max(len(pcm), 1))+1e-9) - 90.3 // dBFS
 	d.audioOK, d.audioErr = true, ""
 	d.ring.write(pcm)
@@ -255,32 +261,44 @@ func (d *Daemon) onAudio(raw []int16) {
 			d.capture = nil
 		}
 	}
-	if d.det == nil || d.paused > 0 {
-		return
+	var fired []*Hit
+	// Push runs under the lock: rebuildDetector swaps the detector, and the
+	// hit callback reads the ring and the word settings.
+	if d.det != nil && d.paused == 0 {
+		d.det.Push(pcm, func(i int, score float32) {
+			fired = append(fired, d.recordHit(d.detWords[i], score))
+		})
 	}
-	d.det.Push(pcm, func(i int, score float32) {
-		id := d.detWords[i]
-		h := &Hit{Word: id, Name: d.wordName(id), Score: score, At: time.Now()}
-		h.audio = d.ring.last(3 * kws.SampleRate)
-		if !d.settings.DryRun {
+	d.mu.Unlock()
+
+	d.audio.publish(pcm)
+
+	// Actions run outside the lock: a webhook or a hook must never stall
+	// audio processing.
+	for _, h := range fired {
+		log.Printf("hit %s score %.3f actions=%v", h.Word, h.Score, h.Actions)
+		d.events.publish(eventOf(h, h.Actions))
+		d.fireActions(h, h.Actions)
+	}
+}
+
+// recordHit stores a detection; caller holds d.mu.
+func (d *Daemon) recordHit(id string, score float32) *Hit {
+	h := &Hit{Word: id, Name: d.wordName(id), Score: score, At: time.Now()}
+	h.audio = d.ring.last(3 * kws.SampleRate)
+	h.Actions = d.actionsFor(id)
+	for _, a := range h.Actions {
+		if a == actAlice {
 			h.Fired = true
-			go func() {
-				if err := d.startListen(); err != nil {
-					log.Printf("start conversation: %v", err)
-					d.mu.Lock()
-					h.Error = err.Error()
-					d.mu.Unlock()
-				}
-			}()
 		}
-		d.hitSeq++
-		h.ID = d.hitSeq
-		d.hits = append(d.hits, h)
-		if len(d.hits) > 20 {
-			d.hits = d.hits[len(d.hits)-20:]
-		}
-		log.Printf("hit %s score %.3f", id, score)
-	})
+	}
+	d.hitSeq++
+	h.ID = d.hitSeq
+	d.hits = append(d.hits, h)
+	if len(d.hits) > 20 {
+		d.hits = d.hits[len(d.hits)-20:]
+	}
+	return h
 }
 
 func (d *Daemon) wordName(id string) string {

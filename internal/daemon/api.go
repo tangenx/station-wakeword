@@ -31,6 +31,7 @@ type wordView struct {
 	FalseClips  int       `json:"false_clips"`
 	Created     time.Time `json:"created"`
 	Score       float32   `json:"score"`
+	Actions     []string  `json:"actions,omitempty"`
 	Notes       []string  `json:"notes,omitempty"`
 }
 
@@ -76,7 +77,7 @@ func (d *Daemon) state() stateView {
 			ID: w.ID, Name: w.Model.Name, Enabled: s != nil && s.Enabled, Sensitivity: s.Sensitivity,
 			Threshold: w.Model.Threshold, Recall: w.Model.Recall, FalsePerH: w.Model.FalsePerH,
 			Takes: w.Model.Takes, FalseClips: len(falses), Created: w.Model.Created,
-			Score: scores[w.ID], Notes: w.Model.TrainNotes,
+			Score: scores[w.ID], Notes: w.Model.TrainNotes, Actions: d.actionsFor(w.ID),
 		})
 	}
 	v.Hits = make([]*Hit, len(d.hits))
@@ -110,6 +111,7 @@ func (d *Daemon) Handler() http.Handler {
 		var req struct {
 			Enabled     *bool    `json:"enabled"`
 			Sensitivity *float32 `json:"sensitivity"`
+			Actions     []string `json:"actions"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpErr(w, err)
@@ -127,6 +129,9 @@ func (d *Daemon) Handler() http.Handler {
 		}
 		if req.Sensitivity != nil {
 			s.Sensitivity = max(-0.3, min(0.3, *req.Sensitivity))
+		}
+		if req.Actions != nil {
+			s.Actions = normalizeActions(req.Actions)
 		}
 		if err := d.saveSettings(); err != nil {
 			httpErr(w, err)
@@ -195,6 +200,8 @@ func (d *Daemon) Handler() http.Handler {
 		d.mu.Unlock()
 		writeJSON(w, map[string]bool{"ok": true})
 	})
+	mux.HandleFunc("GET /api/events", d.serveEvents)
+	mux.HandleFunc("GET /api/stream", d.serveAudio)
 	mux.HandleFunc("POST /api/listen", func(w http.ResponseWriter, r *http.Request) {
 		if err := d.startListen(); err != nil {
 			httpErr(w, err)

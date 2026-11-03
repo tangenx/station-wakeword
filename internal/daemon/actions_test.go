@@ -1,0 +1,218 @@
+package daemon
+
+import (
+	"bufio"
+	"context"
+	"encoding/binary"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func newTestDaemon(t *testing.T) *Daemon {
+	t.Helper()
+	d, err := New(Options{DataDir: t.TempDir(), Negatives: filepath.Join(t.TempDir(), "neg.bin"), QuasarCfg: "/nonexistent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.startListen = func() error { return nil }
+	return d
+}
+
+func TestActionsFor(t *testing.T) {
+	cases := []struct {
+		name string
+		dry  bool
+		url  string
+		exec string
+		word []string
+		want []string
+	}{
+		{name: "default wakes Alice", want: []string{"alice"}},
+		{name: "dry run silences Alice", dry: true, want: nil},
+		{name: "hooks join by default", url: "http://x/hook", exec: "/tmp/h.sh", want: []string{"alice", "webhook", "exec"}},
+		{name: "dry run keeps hooks", dry: true, url: "http://x/hook", exec: "/tmp/h.sh", want: []string{"webhook", "exec"}},
+		{name: "explicit list replaces the default", word: []string{"webhook"}, url: "http://x/hook", want: []string{"webhook"}},
+		{name: "unknown and duplicate actions are dropped", word: []string{"nope", "ALICE", "alice"}, want: []string{"alice"}},
+		{name: "hook without a target is dropped", word: []string{"webhook"}, want: nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := newTestDaemon(t)
+			d.mu.Lock()
+			d.settings.DryRun, d.settings.OnHitURL, d.settings.OnHitExec = c.dry, c.url, c.exec
+			d.settings.Words["w"] = &WordSettings{Enabled: true, Actions: c.word}
+			got := d.actionsFor("w")
+			d.mu.Unlock()
+			if strings.Join(got, ",") != strings.Join(c.want, ",") {
+				t.Fatalf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// A hit fires exactly the configured actions: Alice only when allowed, the
+// hook with the hit in argv and environment.
+func TestHitRunsActions(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var ev hitEvent
+		if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
+			t.Errorf("webhook body: %v", err)
+		}
+		mu.Lock()
+		got = append(got, "webhook:"+ev.Word)
+		mu.Unlock()
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "env.txt")
+	script := filepath.Join(dir, "hook.sh")
+	err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s %s %s\\n' \"$WAKE_WORD\" \"$WAKE_SCORE\" \"$1\" > "+envFile+"\n"), 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d := newTestDaemon(t)
+	alice := 0
+	d.startListen = func() error { alice++; return nil }
+	d.mu.Lock()
+	d.settings.OnHitURL, d.settings.OnHitExec = srv.URL, script
+	d.words = []word{{ID: "w", Model: nil}}
+	d.mu.Unlock()
+
+	h := &Hit{ID: 1, Word: "w", Name: "W", Score: 0.9, At: time.Now(), Actions: []string{"alice", "webhook", "exec"}}
+	d.fireActions(h, h.Actions)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(envFile); err == nil && len(b) > 0 {
+			if f := strings.Fields(string(b)); len(f) < 3 || f[0] != "w" || f[2] != "w" {
+				t.Fatalf("hook saw %q", b)
+			}
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	actions := strings.Join(got, ",")
+	mu.Unlock()
+	if actions != "webhook:w" {
+		t.Fatalf("webhook calls: %q", actions)
+	}
+	if alice != 1 {
+		t.Fatalf("alice called %d times", alice)
+	}
+}
+
+func TestServeEvents(t *testing.T) {
+	d := newTestDaemon(t)
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/events", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content type %q", ct)
+	}
+	lines := make(chan string, 4)
+	go func() {
+		sc := bufio.NewScanner(resp.Body)
+		for sc.Scan() {
+			if line := sc.Text(); strings.HasPrefix(line, "data: ") {
+				lines <- strings.TrimPrefix(line, "data: ")
+				return
+			}
+		}
+	}()
+	// The subscriber registers on connect; give it a moment, then publish.
+	time.Sleep(100 * time.Millisecond)
+	d.events.publish(hitEvent{Word: "w", Name: "W", Score: 0.8, At: time.Now()})
+	select {
+	case line := <-lines:
+		var ev hitEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Fatalf("%q: %v", line, err)
+		}
+		if ev.Word != "w" || ev.Score != 0.8 {
+			t.Fatalf("event %+v", ev)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no event")
+	}
+}
+
+func TestServeAudio(t *testing.T) {
+	d := newTestDaemon(t)
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/stream", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "audio/L16") {
+		t.Fatalf("content type %q", ct)
+	}
+	time.Sleep(100 * time.Millisecond)
+	d.audio.publish([]int16{1, -2, 300})
+
+	buf := make([]byte, 6)
+	done := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(resp.Body, buf)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no audio")
+	}
+	want := []int16{1, -2, 300}
+	for i, w := range want {
+		if got := int16(binary.LittleEndian.Uint16(buf[2*i:])); got != w {
+			t.Fatalf("sample %d = %d, want %d", i, got, w)
+		}
+	}
+}
+
+func TestNormalizeActions(t *testing.T) {
+	got := normalizeActions([]string{" Webhook ", "alice", "alice", "bogus", "EXEC"})
+	if strings.Join(got, ",") != "alice,exec,webhook" {
+		t.Fatalf("got %v", got)
+	}
+	if normalizeActions(nil) != nil {
+		t.Fatal("empty list must stay empty (defaults apply)")
+	}
+}

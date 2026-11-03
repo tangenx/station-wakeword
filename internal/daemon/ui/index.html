@@ -152,6 +152,7 @@ function renderWords(s) {
         <span class="stats grow">${w.takes} записей · проверка: узнаёт ${pct(w.recall)} · ложных ≈ ${w.false_per_h.toFixed(1)}/час${w.false_clips ? ` · отмечено ложных: ${w.false_clips}` : ""}</span>
         <span class="stats">реже</span><input type="range" min="-0.3" max="0.3" step="0.05" value="${w.sensitivity}" data-sens="${w.id}"><span class="stats">чаще</span>
       </div>
+      ${(w.actions || []).length ? `<div class="stats">при срабатывании: ${w.actions.map(a => ({alice: "Алиса слушает", webhook: "вебхук", exec: "скрипт"}[a] || esc(a))).join(" · ")}</div>` : `<div class="stats">при срабатывании: ничего (только запись в журнал)</div>`}
       ${(w.notes || []).length ? `<div class="stats">${w.notes.map(esc).join("<br>")}</div>` : ""}
       <div class="row" style="margin-top:10px">
         <button data-more="${esc(w.name)}">Дозаписать</button>
