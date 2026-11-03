@@ -49,12 +49,6 @@ func (s *subscribers[T]) publish(v T) {
 	}
 }
 
-func (s *subscribers[T]) count() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.subs)
-}
-
 // serveEvents streams hits as Server-Sent Events: one JSON object per event,
 // a comment every 15 s keeps idle connections alive.
 func (d *Daemon) serveEvents(w http.ResponseWriter, r *http.Request) {
