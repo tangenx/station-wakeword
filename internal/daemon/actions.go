@@ -23,11 +23,26 @@ import (
 // word and leaves the rest intact, so a hook-based setup keeps working.
 const (
 	actAlice   = "alice"   // ask Alice to listen (stock behaviour)
+	actLLM     = "llm"     // like alice, but mark the request for the local bridge's LLM
 	actWebhook = "webhook" // POST settings.on_hit_url
 	actExec    = "exec"    // run settings.on_hit_exec
 )
 
-var knownActions = map[string]bool{actAlice: true, actWebhook: true, actExec: true}
+var knownActions = map[string]bool{actAlice: true, actLLM: true, actWebhook: true, actExec: true}
+
+// defaultRouteMarker is the file a local bridge (for example Quasar Bridge in
+// hybrid mode) reads to learn that the next voice request came from a custom
+// word and should go to its own LLM instead of Yandex.
+const defaultRouteMarker = "/tmp/wakeword-route"
+
+func (d *Daemon) routeMarker() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.settings.RouteMarker != "" {
+		return d.settings.RouteMarker
+	}
+	return defaultRouteMarker
+}
 
 // defaultActions is used when a word has no explicit list: stock behaviour,
 // plus hooks once they are configured.
@@ -55,7 +70,7 @@ func (d *Daemon) actionsFor(id string) []string {
 		if !knownActions[a] || seen[a] {
 			continue
 		}
-		if a == actAlice && d.settings.DryRun {
+		if (a == actAlice || a == actLLM) && d.settings.DryRun {
 			continue // dry run: never wake Alice
 		}
 		if a == actWebhook && d.settings.OnHitURL == "" {
@@ -78,6 +93,22 @@ func (d *Daemon) fireActions(h *Hit, actions []string) {
 
 	for _, a := range actions {
 		switch a {
+		case actLLM:
+			go func() {
+				marker := d.routeMarker()
+				// Do not start a conversation if marking failed: the request
+				// would silently go to Yandex instead of the LLM.
+				if err := os.WriteFile(marker, []byte("llm\n"), 0600); err != nil {
+					log.Printf("action llm marker: %v", err)
+					d.setHitError(h, err.Error())
+					return
+				}
+				if err := d.startListen(); err != nil {
+					os.Remove(marker)
+					log.Printf("action llm: %v", err)
+					d.setHitError(h, err.Error())
+				}
+			}()
 		case actAlice:
 			go func() {
 				if err := d.startListen(); err != nil {

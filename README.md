@@ -122,6 +122,9 @@ go build -o wakeword ./cmd/wakeword
 | `on_hit_exec`                        | скрипт при срабатывании (абсолютный путь)           | -            |
 | `words.<id>.enabled`, `.sensitivity` | то же, что переключатель и ползунок в UI            | -            |
 | `words.<id>.actions`                 | что делать при срабатывании (см. ниже)              | `["alice"]`  |
+| `route_marker`                        | файл-метка для действия `llm`                       | `/tmp/wakeword-route` |
+| `countdown_secs`                      | пауза перед каждой записью в веб-панели, секунды    | `3`          |
+| `beeps`                               | сигнал станции в начале и в конце записи из панели  | `false`      |
 
 ### Действия при срабатывании
 
@@ -142,6 +145,7 @@ go build -o wakeword ./cmd/wakeword
 | Действие  | Что делает |
 | --------- | ---------- |
 | `alice`   | просит Алису слушать (штатное поведение) |
+| `llm`     | как `alice`, но перед стартом записывает в `route_marker` строку `llm`: локальный мост (Quasar Bridge, режим hybrid) отправит ближайший запрос в свой LLM, а не в Яндекс. Без моста действует как `alice` |
 | `webhook` | POST `{"word","name","score","at"}` на `on_hit_url`, таймаут 2 с |
 | `exec`    | запускает `on_hit_exec`; слово и score приходят аргументами и в `WAKE_WORD`, `WAKE_NAME`, `WAKE_SCORE`, `WAKE_AT`, таймаут 10 с |
 
