@@ -33,12 +33,16 @@ type Options struct {
 
 // Settings is persisted in <data>/settings.json.
 type Settings struct {
-	Channel   string                   `json:"channel"`     // yio_audio channel
-	Gain      float64                  `json:"gain"`        // applied before everything else
-	DryRun    bool                     `json:"dry_run"`     // never wake Alice; other actions still run
-	OnHitURL  string                   `json:"on_hit_url"`  // POST a hit as JSON
-	OnHitExec string                   `json:"on_hit_exec"` // run this script on a hit
-	Words     map[string]*WordSettings `json:"words"`
+	Channel   string  `json:"channel"`     // yio_audio channel
+	Gain      float64 `json:"gain"`        // applied before everything else
+	DryRun    bool    `json:"dry_run"`     // never wake Alice; other actions still run
+	OnHitURL  string  `json:"on_hit_url"`  // POST a hit as JSON
+	OnHitExec string  `json:"on_hit_exec"` // run this script on a hit
+	// RouteMarker is the file written by the "llm" action; default /tmp/wakeword-route.
+	RouteMarker   string                   `json:"route_marker,omitempty"`
+	CountdownSecs int                      `json:"countdown_secs,omitempty"` // delay before each UI recording; default 3
+	Beeps         bool                     `json:"beeps,omitempty"`          // station beeps when a recording starts and ends
+	Words         map[string]*WordSettings `json:"words"`
 }
 
 type WordSettings struct {

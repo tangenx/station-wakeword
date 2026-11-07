@@ -65,7 +65,11 @@
   <div class="card" id="newcard">
     <div class="row">
       <div class="grow"><h2>Новое слово</h2><div class="muted">Запись идёт микрофонами станции — говорите так же, как будете звать её потом.</div></div>
-      <button class="primary" id="newbtn">Добавить слово</button>
+      <form id="newform" class="row">
+        <label for="newname">Название слова</label>
+        <input id="newname" type="text" minlength="2" maxlength="40" required placeholder="Например, ChatGPT" autocomplete="off">
+        <button class="primary" id="newbtn" type="submit">Добавить слово</button>
+      </form>
     </div>
   </div>
 
@@ -152,7 +156,7 @@ function renderWords(s) {
         <span class="stats grow">${w.takes} записей · проверка: узнаёт ${pct(w.recall)} · ложных ≈ ${w.false_per_h.toFixed(1)}/час${w.false_clips ? ` · отмечено ложных: ${w.false_clips}` : ""}</span>
         <span class="stats">реже</span><input type="range" min="-0.3" max="0.3" step="0.05" value="${w.sensitivity}" data-sens="${w.id}"><span class="stats">чаще</span>
       </div>
-      ${(w.actions || []).length ? `<div class="stats">при срабатывании: ${w.actions.map(a => ({alice: "Алиса слушает", webhook: "вебхук", exec: "скрипт"}[a] || esc(a))).join(" · ")}</div>` : `<div class="stats">при срабатывании: ничего (только запись в журнал)</div>`}
+      ${(w.actions || []).length ? `<div class="stats">при срабатывании: ${w.actions.map(a => ({alice: "Алиса слушает", llm: "слушает, ответит LLM-бэкенд", webhook: "вебхук", exec: "скрипт"}[a] || esc(a))).join(" · ")}</div>` : `<div class="stats">при срабатывании: ничего (только запись в журнал)</div>`}
       ${(w.notes || []).length ? `<div class="stats">${w.notes.map(esc).join("<br>")}</div>` : ""}
       <div class="row" style="margin-top:10px">
         <button data-more="${esc(w.name)}">Дозаписать</button>
@@ -232,31 +236,46 @@ async function run(btn, fn) {
   finally { busy = false; if (btn) btn.disabled = false; refresh(); }
 }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+async function countdown() {
+  const secs = state ? state.countdown_secs : 3;
+  for (let n = secs; n >= 1; n--) { $("say").textContent = "Начало через " + n + "…"; await sleep(1000); }
+  if (state && state.beeps) {
+    await api("POST", "/api/beep?kind=start").catch(() => {});
+    await sleep(400);
+  }
+}
+const beepStop = () => state && state.beeps ? api("POST", "/api/beep?kind=stop").catch(() => {}) : Promise.resolve();
 
-$("newbtn").onclick = () => run(null, async () => {
-  const name = prompt("Какое слово будет звать станцию? Например: Джарвис, Компьютер, Станция");
-  if (!name) return;
+$("newform").onsubmit = (event) => { event.preventDefault(); run($("newbtn"), async () => {
+  const name = $("newname").value.trim();
+  if (name.length < 2) { $("newname").setCustomValidity("Введите название слова (не менее 2 символов)"); $("newname").reportValidity(); return; }
   msg($("ambmsg"), ""); msg($("speechmsg"), ""); msg($("takemsg"), ""); $("say").textContent = "";
-  await api("POST", "/api/enroll/start", { name: name.trim() });
-});
+  await api("POST", "/api/enroll/start", { name });
+}); };
+$("newname").oninput = () => $("newname").setCustomValidity("");
 $("wcancel").onclick = () => run(null, async () => { if (confirm("Бросить запись этого слова?")) await api("POST", "/api/enroll/cancel"); });
 $("ambbtn").onclick = () => run($("ambbtn"), async () => {
+  await countdown(); $("say").textContent = "";
   msg($("ambmsg"), "тихо… 8 секунд");
   const r = await api("POST", "/api/enroll/ambient");
+  await beepStop();
   msg($("ambmsg"), `записано (фон ${r.level.toFixed(0)} дБ)`, "ok");
 });
 $("takebtn").onclick = () => run($("takebtn"), async () => {
   msg($("takemsg"), ""); $("lastbtn").hidden = true;
-  for (const n of ["3", "2", "1"]) { $("say").textContent = n + "…"; await sleep(500); }
+  await countdown();
   $("say").textContent = "Говорите!";
   try {
     const r = await api("POST", "/api/enroll/take");
+    await beepStop();
     msg($("takemsg"), r.ok ? `отлично: ${r.duration.toFixed(2)} с · всего ${r.takes}` : r.message, r.ok ? "ok" : "bad");
   } finally { $("say").textContent = ""; $("lastbtn").hidden = false; }
 });
 $("speechbtn").onclick = () => run($("speechbtn"), async () => {
+  await countdown(); $("say").textContent = "";
   msg($("speechmsg"), "читайте вслух… 20 секунд");
   await api("POST", "/api/enroll/speech?secs=20");
+  await beepStop();
   msg($("speechmsg"), "записано", "ok");
 });
 $("trainbtn").onclick = () => run($("trainbtn"), async () => {

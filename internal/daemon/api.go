@@ -51,10 +51,12 @@ type stateView struct {
 		Level   float64 `json:"level"`
 		Channel string  `json:"channel"`
 	} `json:"audio"`
-	Words  []wordView  `json:"words"`
-	Hits   []*Hit      `json:"hits"`
-	Enroll *enrollView `json:"enroll"`
-	Train  trainState  `json:"train"`
+	Words     []wordView  `json:"words"`
+	Countdown int         `json:"countdown_secs"` // seconds the UI waits before each recording
+	Beeps     bool        `json:"beeps"`
+	Hits      []*Hit      `json:"hits"`
+	Enroll    *enrollView `json:"enroll"`
+	Train     trainState  `json:"train"`
 }
 
 func (d *Daemon) state() stateView {
@@ -94,6 +96,10 @@ func (d *Daemon) state() stateView {
 		v.Enroll = ev
 	}
 	v.Train = d.train
+	v.Countdown, v.Beeps = 3, d.settings.Beeps
+	if d.settings.CountdownSecs > 0 {
+		v.Countdown = min(d.settings.CountdownSecs, 60)
+	}
 	return v
 }
 
@@ -201,6 +207,7 @@ func (d *Daemon) Handler() http.Handler {
 		writeJSON(w, map[string]bool{"ok": true})
 	})
 	mux.HandleFunc("GET /api/events", d.serveEvents)
+	mux.HandleFunc("POST /api/beep", d.handleBeep)
 	mux.HandleFunc("GET /api/stream", d.serveAudio)
 	mux.HandleFunc("POST /api/listen", func(w http.ResponseWriter, r *http.Request) {
 		if err := d.startListen(); err != nil {
