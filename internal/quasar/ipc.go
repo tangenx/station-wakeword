@@ -238,6 +238,13 @@ const (
 // Consumers use this namespace and the exact UTF-8 word ID to derive the tag.
 var wakewordNamespace = uuid.MustParse("95fb5d06-1707-4f93-a956-0c306fe57e1b")
 
+// TEventSource values the stock `maind --cli` sends with START_CONVERSATION.
+const (
+	eventClick     = 5 // NAlice.TEventSource.Click
+	sourceHardware = 2 // NAlice.TEventSource.Hardware
+	typeVoice      = 2 // NAlice.TEventSource.Voice
+)
+
 func appendMessage(dst []byte, field protowire.Number, message []byte) []byte {
 	return protowire.AppendBytes(protowire.AppendTag(dst, field, protowire.BytesType), message)
 }
@@ -257,7 +264,13 @@ func CallAlice(port, method int, word string) error {
 	m = protowire.AppendVarint(m, uint64(method))
 	if method == StartConversation && word != "" {
 		id := uuid.NewSHA1(wakewordNamespace, []byte(word)).String()
-		source := protowire.AppendString(protowire.AppendTag(nil, 4, protowire.BytesType), id) // TEventSource.Id
+		// Mirror the EventSource of the stock `maind --cli` frame, which is
+		// known to work: Event=Click (this is the "button pressed" path),
+		// Source=Hardware, Type=Voice. Only Id differs.
+		source := protowire.AppendVarint(protowire.AppendTag(nil, 1, protowire.VarintType), eventClick)
+		source = protowire.AppendVarint(protowire.AppendTag(source, 2, protowire.VarintType), sourceHardware)
+		source = protowire.AppendVarint(protowire.AppendTag(source, 3, protowire.VarintType), typeVoice)
+		source = protowire.AppendString(protowire.AppendTag(source, 4, protowire.BytesType), id) // TEventSource.Id
 		voiceSession := protowire.AppendVarint(protowire.AppendTag(nil, 6, protowire.VarintType), 1)
 		payload := appendMessage(nil, 3, voiceSession) // Request.VoiceSession
 		payload = appendMessage(payload, 11, source)   // RequestPayload.EventSource

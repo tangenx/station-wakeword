@@ -1,5 +1,5 @@
 name: tangenx/wakeword
-version: 0.3.0
+version: 0.4.0
 license: Apache-2.0
 description: "Свои слова активации: слово записывается микрофонами станции и обучается на ней же, настройка в браузере"
 homepage: https://github.com/tangenx/station-wakeword
