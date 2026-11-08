@@ -2,10 +2,14 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,7 +26,7 @@ func newTestDaemon(t *testing.T) *Daemon {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d.startListen = func() error { return nil }
+	d.startListen = func(string) error { return nil }
 	return d
 }
 
@@ -83,8 +87,8 @@ func TestHitRunsActions(t *testing.T) {
 	}
 
 	d := newTestDaemon(t)
-	alice := 0
-	d.startListen = func() error { alice++; return nil }
+	alice := make(chan string, 1)
+	d.startListen = func(word string) error { alice <- word; return nil }
 	d.mu.Lock()
 	d.settings.OnHitURL, d.settings.OnHitExec = srv.URL, script
 	d.words = []word{{ID: "w", Model: nil}}
@@ -118,8 +122,89 @@ func TestHitRunsActions(t *testing.T) {
 	if actions != "webhook:w" {
 		t.Fatalf("webhook calls: %q", actions)
 	}
-	if alice != 1 {
-		t.Fatalf("alice called %d times", alice)
+	select {
+	case word := <-alice:
+		if word != "" {
+			t.Fatalf("unexpected wakeword tag for %q", word)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Alice action did not run")
+	}
+}
+
+func TestAliceWakewordTag(t *testing.T) {
+	const plain = "1c000000e20f153a0f416c6963654361706162696c69747942020802e80fd201"
+	const tagged = `{"tag_alice_wakeword":true}`
+	for _, tc := range []struct {
+		name, settings, word, frame string
+	}{
+		{"default", `{}`, "джарвис", plain},
+		{"first word", tagged, "джарвис", "4f000000e20f483a0f416c6963654361706162696c69747942350802a201300a2e0a2c1a0230015a26222431666233373961332d613431352d353637642d396263352d393737636434343932386233e80fd201"},
+		{"second word", tagged, "домовёнок", "4f000000e20f483a0f416c6963654361706162696c69747942350802a201300a2e0a2c1a0230015a26222462346431333731352d396435312d353565342d623362652d663236633738353432383461e80fd201"},
+		{"manual listen", tagged, "", plain},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+			deadline := time.Now().Add(3 * time.Second)
+			ln.SetDeadline(deadline)
+			dir := t.TempDir()
+			cfg := filepath.Join(dir, "quasar.cfg")
+			if err := os.WriteFile(cfg, fmt.Appendf(nil, `{"aliced":{"port":%d}}`, ln.Addr().(*net.TCPAddr).Port), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(tc.settings), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			d, err := New(Options{DataDir: dir, QuasarCfg: cfg})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var status chan int
+			if tc.word == "" {
+				status = make(chan int, 1)
+				go func() {
+					rec := httptest.NewRecorder()
+					d.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/listen", nil))
+					status <- rec.Code
+				}()
+			} else {
+				hit := &Hit{Word: tc.word}
+				d.fireActions(hit, d.actionsFor(hit.Word))
+			}
+			conn, err := ln.AcceptTCP()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			conn.SetDeadline(deadline)
+			var header [4]byte
+			if _, err := io.ReadFull(conn, header[:]); err != nil {
+				t.Fatal(err)
+			}
+			size := binary.LittleEndian.Uint32(header[:])
+			if size > 256 {
+				t.Fatalf("unexpected IPC frame length %d", size)
+			}
+			body := make([]byte, size)
+			if _, err := io.ReadFull(conn, body); err != nil {
+				t.Fatal(err)
+			}
+			conn.Close()
+			if status != nil && <-status != http.StatusOK {
+				t.Fatal("manual listen failed")
+			}
+			want, err := hex.DecodeString(tc.frame)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := append(header[:], body...); !bytes.Equal(got, want) {
+				t.Fatalf("IPC frame\n got %x\nwant %x", got, want)
+			}
+		})
 	}
 }
 

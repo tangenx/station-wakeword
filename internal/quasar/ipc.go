@@ -14,6 +14,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -234,10 +235,18 @@ const (
 	StopConversation  = 3
 )
 
+// Consumers use this namespace and the exact UTF-8 word ID to derive the tag.
+var wakewordNamespace = uuid.MustParse("95fb5d06-1707-4f93-a956-0c306fe57e1b")
+
+func appendMessage(dst []byte, field protowire.Number, message []byte) []byte {
+	return protowire.AppendBytes(protowire.AppendTag(dst, field, protowire.BytesType), message)
+}
+
 // CallAlice sends one AliceCapability remoting call to aliced, the same
 // call the stock `maind --cli` makes. START_CONVERSATION opens a plain voice
 // request (as the app/button would): Alice listens from this moment on.
-func CallAlice(port, method int) error {
+// A nonempty wakeword ID tags a START_CONVERSATION voice request.
+func CallAlice(port, method int, word string) error {
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 2*time.Second)
 	if err != nil {
 		return err
@@ -246,6 +255,16 @@ func CallAlice(port, method int) error {
 	conn.SetDeadline(time.Now().Add(2 * time.Second))
 	m := protowire.AppendTag(nil, 1, protowire.VarintType)
 	m = protowire.AppendVarint(m, uint64(method))
+	if method == StartConversation && word != "" {
+		id := uuid.NewSHA1(wakewordNamespace, []byte(word)).String()
+		source := protowire.AppendString(protowire.AppendTag(nil, 4, protowire.BytesType), id) // TEventSource.Id
+		voiceSession := protowire.AppendVarint(protowire.AppendTag(nil, 6, protowire.VarintType), 1)
+		payload := appendMessage(nil, 3, voiceSession) // Request.VoiceSession
+		payload = appendMessage(payload, 11, source)   // RequestPayload.EventSource
+		voice := appendMessage(nil, 1, payload)        // TVoiceInput.RequestPayload
+		request := appendMessage(nil, 1, voice)        // TAliceRequest.VoiceInput
+		m = appendMessage(m, 20, request)              // AliceCapabilityMethod.alice_request
+	}
 	r := protowire.AppendTag(nil, 7, protowire.BytesType)
 	r = protowire.AppendString(r, "AliceCapability")
 	r = protowire.AppendTag(r, 8, protowire.BytesType)

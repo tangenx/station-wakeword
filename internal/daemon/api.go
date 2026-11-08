@@ -203,7 +203,7 @@ func (d *Daemon) Handler() http.Handler {
 	mux.HandleFunc("GET /api/events", d.serveEvents)
 	mux.HandleFunc("GET /api/stream", d.serveAudio)
 	mux.HandleFunc("POST /api/listen", func(w http.ResponseWriter, r *http.Request) {
-		if err := d.startListen(); err != nil {
+		if err := d.startListen(""); err != nil {
 			httpErr(w, err)
 			return
 		}
