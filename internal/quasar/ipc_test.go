@@ -29,7 +29,7 @@ func TestStartConversationFrame(t *testing.T) {
 		n, _ := c.Read(buf[:])
 		got <- buf[:n]
 	}()
-	if err := CallAlice(ln.Addr().(*net.TCPAddr).Port, StartConversation); err != nil {
+	if err := CallAlice(ln.Addr().(*net.TCPAddr).Port, StartConversation, ""); err != nil {
 		t.Fatal(err)
 	}
 	want, _ := hex.DecodeString("1c000000e20f153a0f416c6963654361706162696c69747942020802e80fd201")

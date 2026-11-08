@@ -74,13 +74,17 @@ func (d *Daemon) actionsFor(id string) []string {
 func (d *Daemon) fireActions(h *Hit, actions []string) {
 	d.mu.Lock()
 	url, script := d.settings.OnHitURL, d.settings.OnHitExec
+	var aliceWord string
+	if d.settings.TagAliceWakeword {
+		aliceWord = h.Word
+	}
 	d.mu.Unlock()
 
 	for _, a := range actions {
 		switch a {
 		case actAlice:
 			go func() {
-				if err := d.startListen(); err != nil {
+				if err := d.startListen(aliceWord); err != nil {
 					log.Printf("action alice: %v", err)
 					d.setHitError(h, err.Error())
 				}
