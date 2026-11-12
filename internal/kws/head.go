@@ -1,11 +1,12 @@
 package kws
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"math/rand/v2"
 	"runtime"
-	"sort"
+	"slices"
 	"sync"
 )
 
@@ -49,6 +50,14 @@ func newHead(rng *rand.Rand) *Head {
 
 func (h *Head) params() [][]float32 {
 	return [][]float32{h.W1, h.B1, h.W2, h.B2, h.W3, h.B3}
+}
+
+func (h *Head) clone() *Head {
+	return &Head{
+		W1: slices.Clone(h.W1), B1: slices.Clone(h.B1),
+		W2: slices.Clone(h.W2), B2: slices.Clone(h.B2),
+		W3: slices.Clone(h.W3), B3: slices.Clone(h.B3),
+	}
 }
 
 // Validate checks tensor sizes (a corrupt model must not crash the daemon).
@@ -145,16 +154,23 @@ func (h *Head) backward(x []float32, a *act, p, y, weight float32, g *Head) {
 type Sample struct {
 	X []float32
 	Y float32
+	// Positive Source identifies a continuous recording; Frame is its
+	// embedding index. Nonpositive sources are independent windows.
+	Source int
+	Frame  int
 }
 
 type TrainConfig struct {
-	Epochs     int
-	Batch      int
-	LR         float64
-	NegPerEp   int     // negatives drawn per epoch (all positives every epoch)
-	PosWeight  float32 // loss weight of positives relative to negatives
-	Seed       uint64
-	OnProgress func(epoch int, loss float64)
+	Epochs        int
+	Batch         int
+	LR            float64
+	NegPerEp      int     // negatives drawn per epoch (all positives every epoch)
+	PosWeight     float32 // loss weight of positives relative to negatives
+	Seed          uint64
+	OnProgress    func(epoch int, loss float64)
+	Validate      func(epoch int, head *Head) float64 // finite metric, lower is better
+	ValidateEvery int
+	Patience      int // consecutive validation checks without improvement
 }
 
 func (c *TrainConfig) defaults() {
@@ -172,6 +188,14 @@ func (c *TrainConfig) defaults() {
 	}
 	if c.PosWeight == 0 {
 		c.PosWeight = 1
+	}
+	if c.Validate != nil {
+		if c.ValidateEvery <= 0 {
+			c.ValidateEvery = 4
+		}
+		if c.Patience <= 0 {
+			c.Patience = 3
+		}
 	}
 }
 
@@ -202,6 +226,9 @@ func Train(pos, neg []Sample, cfg TrainConfig) (*Head, error) {
 	const b1, b2, eps = 0.9, 0.999, 1e-8
 	step := 0
 	var hard []Sample
+	var best *Head
+	bestMetric := math.Inf(1)
+	stale := 0
 	for ep := range cfg.Epochs {
 		// Hard-negative mining: every few epochs the negatives the head likes
 		// most are added to each epoch, so it spends its capacity on
@@ -266,12 +293,41 @@ func Train(pos, neg []Sample, cfg TrainConfig) (*Head, error) {
 		if cfg.OnProgress != nil {
 			cfg.OnProgress(ep+1, lossSum/float64(len(epoch)))
 		}
+		if cfg.Validate != nil && ((ep+1)%cfg.ValidateEvery == 0 || ep+1 == cfg.Epochs) {
+			metric := cfg.Validate(ep+1, h)
+			if math.IsNaN(metric) || math.IsInf(metric, 0) {
+				return nil, fmt.Errorf("kws: validation at epoch %d returned non-finite metric %v", ep+1, metric)
+			}
+			if metric < bestMetric {
+				best, bestMetric, stale = h.clone(), metric, 0
+			} else {
+				stale++
+				if stale >= cfg.Patience {
+					break
+				}
+			}
+		}
+	}
+	if best != nil {
+		return best, nil
 	}
 	return h, nil
 }
 
-// mineHard returns the k negatives with the highest current scores.
+// mineHard selects high-scoring negatives without filling the pool with
+// repeated windows, adjacent frames, or one long recording.
 func mineHard(h *Head, neg []Sample, k, workers int) []Sample {
+	// Weighting a recording repeats the same window slice. It should change
+	// random sampling frequency, not occupy multiple hard-negative slots.
+	seen := make(map[*float32]bool)
+	unique := make([]Sample, 0, len(neg))
+	for _, s := range neg {
+		if !seen[&s.X[0]] {
+			seen[&s.X[0]] = true
+			unique = append(unique, s)
+		}
+	}
+	neg = unique
 	scores := make([]float32, len(neg))
 	var wg sync.WaitGroup
 	for w := range workers {
@@ -289,10 +345,62 @@ func mineHard(h *Head, neg []Sample, k, workers int) []Sample {
 	for i := range idx {
 		idx[i] = i
 	}
-	sort.Slice(idx, func(a, b int) bool { return scores[idx[a]] > scores[idx[b]] })
+	slices.SortFunc(idx, func(a, b int) int {
+		return cmp.Or(cmp.Compare(scores[b], scores[a]), cmp.Compare(a, b))
+	})
+	sources := make(map[int]bool)
+	independent := false
+	for _, s := range neg {
+		if s.Source > 0 {
+			sources[s.Source] = true
+		} else {
+			independent = true
+		}
+	}
+	groups := len(sources)
+	if independent {
+		groups++
+	}
+	groups = max(1, min(groups, 4))
+	quota := max(1, (k+groups-1)/groups)
+	counts := make(map[int]int)
+	frames := make(map[int]map[int]bool)
+	picked := make([]bool, len(neg))
 	out := make([]Sample, 0, k)
-	for _, i := range idx[:min(k, len(idx))] {
-		out = append(out, neg[i])
+	// A second pass relaxes source quotas only if too few diverse examples
+	// exist. Temporal suppression and exact-window deduplication still apply.
+	for pass := range 2 {
+		for _, i := range idx {
+			if len(out) >= k {
+				return out
+			}
+			if picked[i] {
+				continue
+			}
+			s := neg[i]
+			if s.Source > 0 {
+				if pass == 0 && counts[s.Source] >= quota {
+					continue
+				}
+				near := false
+				for f := s.Frame - 5; f <= s.Frame+5; f++ {
+					if frames[s.Source][f] {
+						near = true
+						break
+					}
+				}
+				if near {
+					continue
+				}
+				if frames[s.Source] == nil {
+					frames[s.Source] = make(map[int]bool)
+				}
+				frames[s.Source][s.Frame] = true
+				counts[s.Source]++
+			}
+			picked[i] = true
+			out = append(out, s)
+		}
 	}
 	return out
 }
