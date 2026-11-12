@@ -139,8 +139,11 @@ func segment(rng *rand.Rand, src []int16, n int) []int16 {
 // Augment builds one positive training signal from a take: random speed and
 // gain, placed after preCtx of background (room or the user's own speech)
 // and followed by post samples; noise mixed at a random SNR. Returns the
-// signal and the sample index where the word ends.
-func Augment(rng *rand.Rand, word []int16, backgrounds [][]int16, pre, post int) ([]int16, int) {
+// signal and the actual sample offsets where the word starts and ends.
+func Augment(rng *rand.Rand, word []int16, backgrounds [][]int16, pre, post int) ([]int16, int, int) {
+	// Vary both the time position and its phase relative to 80 ms frames.
+	// Keep at least pre samples so every positive has a full feature history.
+	pre += rng.IntN(3*StepSamp + 1)
 	w := Resample(word, 0.88+0.24*rng.Float64())
 	gain := math.Pow(10, (-10+16*rng.Float64())/20)
 	bg := backgrounds[rng.IntN(len(backgrounds))]
@@ -156,5 +159,5 @@ func Augment(rng *rand.Rand, word []int16, backgrounds [][]int16, pre, post int)
 		}
 		out[i] = clip16(v)
 	}
-	return out, pre + len(w)
+	return out, pre, pre + len(w)
 }

@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
+	"strings"
 	"time"
 
 	"wakeword/internal/kws"
@@ -23,12 +24,16 @@ func cmdTrain(args []string) error {
 	takesDir := fs.String("takes", "", "directory of 16 kHz WAV takes, one utterance each")
 	ambient := fs.String("ambient", "", "16 kHz WAV of the room")
 	speech := fs.String("speech", "", "16 kHz WAV of normal speech (optional)")
+	confusers := fs.String("confusers", "", "directory of similar phrases without the wake word (optional)")
 	negPath := fs.String("negatives", "negatives.bin", "bundled negative set")
 	out := fs.String("out", "model.json", "output model")
+	seed := fs.Uint64("seed", uint64(time.Now().UnixNano()), "training seed for repeatable splits and augmentation")
 	fs.Parse(args)
 
-	files, _ := filepath.Glob(filepath.Join(*takesDir, "[^.]*.wav")) // skip macOS ._ files
-	sort.Strings(files)
+	files, err := takeFiles(*takesDir)
+	if err != nil {
+		return err
+	}
 	var en kws.Enrollment
 	for _, f := range files {
 		pcm, err := wav.ReadFile(f, kws.SampleRate)
@@ -37,13 +42,30 @@ func cmdTrain(args []string) error {
 		}
 		en.Takes = append(en.Takes, pcm)
 	}
-	var err error
 	if en.Ambient, err = wav.ReadFile(*ambient, kws.SampleRate); err != nil {
 		return err
 	}
 	if *speech != "" {
 		if en.Speech, err = wav.ReadFile(*speech, kws.SampleRate); err != nil {
 			return err
+		}
+	}
+	pattern := filepath.Join(*takesDir, "negative-*.wav")
+	if *confusers != "" {
+		pattern = filepath.Join(*confusers, "[^.]*.wav")
+	}
+	for _, group := range []struct {
+		pattern string
+		target  *[][]int16
+	}{{pattern, &en.Confusers}, {filepath.Join(*takesDir, "false-*.wav"), &en.False}} {
+		paths, _ := filepath.Glob(group.pattern)
+		slices.Sort(paths)
+		for _, path := range paths {
+			pcm, err := wav.ReadFile(path, kws.SampleRate)
+			if err != nil {
+				return err
+			}
+			*group.target = append(*group.target, pcm)
 		}
 	}
 	nb, err := os.ReadFile(*negPath)
@@ -56,7 +78,7 @@ func cmdTrain(args []string) error {
 	}
 	start := time.Now()
 	last := ""
-	m, err := kws.TrainWord(*name, en, neg, uint64(time.Now().UnixNano()), func(stage string, frac float64) {
+	m, err := kws.TrainWord(*name, en, neg, *seed, func(stage string, frac float64) {
 		if s := fmt.Sprintf("%s %3.0f%%", stage, frac*100); s != last && int(frac*100)%10 == 0 {
 			fmt.Fprintln(os.Stderr, s)
 			last = s
@@ -69,12 +91,33 @@ func cmdTrain(args []string) error {
 	if err := os.WriteFile(*out, b, 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("%s: threshold %.2f, held-out recall %.0f%%, %.2f false/h over %.2f h, %d takes, %s\n",
-		*out, m.Threshold, m.Recall*100, m.FalsePerH, m.EvalHours, m.Takes, time.Since(start).Round(time.Second))
+	fmt.Printf("%s: threshold %.4f, calibration %d/%d original takes, %d false events over %.1f min, best epoch %d, seed %d, %s\n",
+		*out, m.Threshold, m.DetectedTakes, m.EvalTakes, m.FalseTriggers, m.EvalHours*60, m.BestEpoch, m.Seed, time.Since(start).Round(time.Second))
 	for _, n := range m.TrainNotes {
 		fmt.Println("  ", n)
 	}
 	return nil
+}
+
+// Station directories contain both labels. Generic positive filenames remain
+// supported, but reserved background/negative files must never become words.
+func takeFiles(dir string) ([]string, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "take-*.wav"))
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		files, err = filepath.Glob(filepath.Join(dir, "[^.]*.wav"))
+		if err != nil {
+			return nil, err
+		}
+		files = slices.DeleteFunc(files, func(path string) bool {
+			name := filepath.Base(path)
+			return name == "ambient.wav" || name == "speech.wav" || strings.HasPrefix(name, "negative-") || strings.HasPrefix(name, "false-")
+		})
+	}
+	slices.Sort(files)
+	return files, nil
 }
 
 // cmdScan runs models over a WAV and prints detections with timestamps.

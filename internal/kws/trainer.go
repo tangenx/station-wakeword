@@ -83,23 +83,35 @@ func f16(h uint16) float32 {
 
 // Enrollment is what the station recorded for one word.
 type Enrollment struct {
-	Takes   [][]int16 // one utterance of the word per take (with silence around)
-	Ambient []int16   // room with nobody talking to the station
-	Speech  []int16   // the user talking normally (hard negatives)
-	False   [][]int16 // audio that wrongly triggered this word earlier
+	Takes     [][]int16 // one utterance of the word per take (with silence around)
+	Ambient   []int16   // room with nobody talking to the station
+	Speech    []int16   // the user talking normally (hard negatives)
+	False     [][]int16 // audio that wrongly triggered this word earlier
+	Confusers [][]int16 // deliberately recorded similar words, without the wake word
+	Synthetic [][]int16 // optional generated variants; training only, never real takes
 }
 
 // Model is a trained word, as stored on the station.
 type Model struct {
-	Name       string    `json:"name"`
-	Threshold  float32   `json:"threshold"`
-	Created    time.Time `json:"created"`
-	Takes      int       `json:"takes"`
-	Recall     float64   `json:"recall"`      // held-out takes detected at Threshold
-	FalsePerH  float64   `json:"false_per_h"` // held-out negatives, triggers per hour
-	EvalHours  float64   `json:"eval_hours"`
-	Head       *Head     `json:"head"`
-	TrainNotes []string  `json:"notes,omitempty"`
+	Name              string    `json:"name"`
+	Threshold         float32   `json:"threshold"`
+	Created           time.Time `json:"created"`
+	Takes             int       `json:"takes"`
+	Recall            float64   `json:"recall"`      // held-out takes detected at Threshold
+	FalsePerH         float64   `json:"false_per_h"` // held-out negatives, triggers per hour
+	EvalHours         float64   `json:"eval_hours"`
+	Head              *Head     `json:"head"`
+	TrainNotes        []string  `json:"notes,omitempty"`
+	ValidationVersion int       `json:"validation_version,omitzero"`
+	EvalTakes         int       `json:"eval_takes,omitzero"`
+	DetectedTakes     int       `json:"detected_takes,omitzero"`
+	FalseTriggers     int       `json:"false_triggers,omitzero"`
+	BestEpoch         int       `json:"best_epoch,omitzero"`
+	Seed              uint64    `json:"seed,omitzero"`
+	// Synthetic metadata covers distinct normalized sources actually used
+	// by positive training windows; real take/calibration counts exclude them.
+	SyntheticTakes  int    `json:"synthetic_takes,omitzero"`
+	SyntheticDigest string `json:"synthetic_digest,omitempty"`
 }
 
 // ReadModel parses and checks a stored model.
@@ -129,228 +141,292 @@ const (
 	refractory = 36
 )
 
-// TrainWord trims the takes, augments them with the room and the user's own
-// speech, trains a head and calibrates its threshold on held-out data.
+const (
+	positiveTrain = iota
+	positiveCheck
+	negativeTrain
+	negativeCheck
+	pastFalse
+	syntheticTrain
+)
+
+type trainingJob struct {
+	kind, weight    int
+	pcm             []int16
+	start, end      int
+	syntheticSource int
+}
+
+// splitTakeIndices holds out whole original recordings, even for the smallest
+// supported enrollment. Seeded membership avoids always testing the same place
+// in an ordered recording session; returned indices retain recording order.
+func splitTakeIndices(n int, seed uint64) (train, check []int) {
+	if n < 2 {
+		for i := range n {
+			train = append(train, i)
+		}
+		return
+	}
+	indices := make([]int, n)
+	for i := range indices {
+		indices[i] = i
+	}
+	rng := rand.New(rand.NewPCG(seed, 0x74616b6573706c69))
+	rng.Shuffle(n, func(i, j int) { indices[i], indices[j] = indices[j], indices[i] })
+	held := make(map[int]bool)
+	for _, i := range indices[:max(1, n/4)] {
+		held[i] = true
+	}
+	for i := range n {
+		if held[i] {
+			check = append(check, i)
+		} else {
+			train = append(train, i)
+		}
+	}
+	return
+}
+
+// Split raw PCM BEFORE augmentation/embedding. A discarded 800 ms gap prevents
+// overlapping embedding receptive fields from crossing the split. Short clips
+// remain training-only; they cannot provide a full independent detection window.
+func splitBackground(pcm []int16) (train, check []int16) {
+	hold := max(3*SampleRate, len(pcm)/5)
+	cut := len(pcm) - hold - StepSamp*10
+	if cut < preCtxSamp {
+		return pcm, nil
+	}
+	return pcm[:cut], pcm[len(pcm)-hold:]
+}
+
+// TrainWord augments only training audio, validates on unaugmented held-out
+// takes and independent background, and returns the best validation checkpoint.
 func TrainWord(name string, en Enrollment, neg *Negatives, seed uint64, progress Progress) (*Model, error) {
 	if progress == nil {
 		progress = func(string, float64) {}
 	}
-	var words [][]int16
+	if neg == nil {
+		return nil, errors.New("kws: no negative dataset")
+	}
+	type take struct {
+		word, raw  []int16
+		start, end int
+	}
+	var takes []take
+	var originalTakeIndices []int
 	var notes []string
-	for i, t := range en.Takes {
-		s, e, ok := FindSpeech(t)
-		d := float64(e-s) / SampleRate
-		if !ok || d < 0.2 || d > 2.0 {
-			notes = append(notes, fmt.Sprintf("запись %d пропущена: не найдено чёткое слово (%.2f с)", i+1, d))
+	for i, pcm := range en.Takes {
+		start, end, ok := FindSpeech(pcm)
+		duration := float64(end-start) / SampleRate
+		if !ok || duration < 0.2 || duration > 2 {
+			notes = append(notes, fmt.Sprintf("запись %d пропущена: не найдено чёткое слово (%.2f с)", i+1, duration))
 			continue
 		}
-		words = append(words, t[max(0, s-marginSamp):min(len(t), e+marginSamp)])
+		takes = append(takes, take{pcm[max(0, start-marginSamp):min(len(pcm), end+marginSamp)], pcm, start, end})
+		originalTakeIndices = append(originalTakeIndices, i)
 	}
-	if len(words) < 3 {
-		return nil, fmt.Errorf("kws: only %d usable takes, need at least 3", len(words))
+	if len(takes) < 3 {
+		return nil, fmt.Errorf("kws: only %d usable takes, need at least 3", len(takes))
 	}
-	var backgrounds [][]int16
-	for _, b := range [][]int16{en.Ambient, en.Speech} {
-		if len(b) >= SampleRate {
-			backgrounds = append(backgrounds, b)
+	var backgrounds, evalPCM [][]int16
+	for _, pcm := range [][]int16{en.Ambient, en.Speech} {
+		train, check := splitBackground(pcm)
+		if len(train) >= SampleRate {
+			backgrounds = append(backgrounds, train)
+		}
+		if len(check) > 0 {
+			evalPCM = append(evalPCM, check)
 		}
 	}
 	if len(backgrounds) == 0 {
 		return nil, errors.New("kws: no room recording")
 	}
-
-	// Hold out every 4th take for calibration.
-	var trainW, testW [][]int16
-	for i, w := range words {
-		if len(words) >= 4 && i%4 == 3 {
-			testW = append(testW, w)
-		} else {
-			trainW = append(trainW, w)
+	trainTakes, checkTakes := splitTakeIndices(len(takes), seed)
+	realTrainWords := make([][]int16, 0, len(trainTakes))
+	for _, i := range trainTakes {
+		realTrainWords = append(realTrainWords, takes[i].word)
+	}
+	synthetic := prepareSynthetic(en.Synthetic, realTrainWords)
+	var jobs []trainingJob
+	for _, i := range trainTakes {
+		for range max(12, 320/len(trainTakes)) {
+			jobs = append(jobs, trainingJob{kind: positiveTrain, pcm: takes[i].word})
 		}
 	}
-	if len(testW) == 0 {
-		testW = trainW[len(trainW)-1:]
+	for _, i := range checkTakes {
+		t := takes[i]
+		jobs = append(jobs, trainingJob{kind: positiveCheck, pcm: t.raw, start: t.start, end: t.end})
 	}
-
-	augPerTake := max(12, 320/len(trainW))
-	type job struct {
-		word []int16
-		test bool
+	for _, pcm := range backgrounds {
+		jobs = append(jobs, trainingJob{kind: negativeTrain, pcm: pcm, weight: 1})
 	}
-	var jobs []job
-	for _, w := range trainW {
-		for range augPerTake {
-			jobs = append(jobs, job{w, false})
-		}
+	for _, pcm := range evalPCM {
+		jobs = append(jobs, trainingJob{kind: negativeCheck, pcm: pcm})
 	}
-	for _, w := range testW {
-		for range 12 {
-			jobs = append(jobs, job{w, true})
-		}
+	for _, pcm := range en.False {
+		jobs = append(jobs, trainingJob{kind: pastFalse, pcm: pcm, weight: 4})
 	}
-	// Each signal has its own generator so results do not depend on worker
-	// scheduling, and its audio is dropped once embedded (all signals at
-	// once would not fit a Mini's RAM).
-	type sig struct {
-		end  int
-		test bool
+	// A single deliberate confusing clip is valuable training data. With
+	// several clips, hold out a whole clip instead of neighboring windows.
+	confTrain, confCheck := splitTakeIndices(len(en.Confusers), seed^0x636f6e66757365)
+	for _, i := range confTrain {
+		jobs = append(jobs, trainingJob{kind: negativeTrain, pcm: en.Confusers[i], weight: 4})
 	}
-	sigs := make([]sig, len(jobs))
-	// Stream layout: augmented takes, ambient, speech, false alarms.
-	falseAt := len(sigs) + 2
-	streams := make([]Stream, falseAt+len(en.False))
+	for _, i := range confCheck {
+		jobs = append(jobs, trainingJob{kind: negativeCheck, pcm: en.Confusers[i]})
+	}
+	jobs = appendSyntheticJobs(jobs, synthetic)
+	type signal struct {
+		stream     Stream
+		start, end int
+	}
+	signals := make([]signal, len(jobs))
 	var done int
 	var mu sync.Mutex
-	parallel(len(streams), func(f *Features, i int) {
-		r := rand.New(rand.NewPCG(seed, uint64(i)+2))
-		switch {
-		case i < len(sigs):
-			pcm, end := Augment(r, jobs[i].word, backgrounds, preCtxSamp, postSamp)
-			sigs[i] = sig{end, jobs[i].test}
-			streams[i] = Embed(f, pcm)
-		case i == len(sigs):
-			streams[i] = Embed(f, en.Ambient)
-		case i == len(sigs)+1:
-			streams[i] = Embed(f, en.Speech)
-		default:
-			// Room audio first so windows ending inside the clip are full.
-			streams[i] = Embed(f, append(segment(r, backgrounds[0], preCtxSamp), en.False[i-falseAt]...))
+	parallel(len(jobs), func(f *Features, i int) {
+		j := jobs[i]
+		rng := rand.New(rand.NewPCG(seed, uint64(i)+2))
+		pcm := j.pcm
+		start, end := j.start, j.end
+		switch j.kind {
+		case positiveTrain, syntheticTrain:
+			pcm, start, end = Augment(rng, pcm, backgrounds, preCtxSamp, postSamp)
+		case positiveCheck:
+			// The held-out take is never resampled, amplified, or mixed. Add
+			// independent room context (silence if unavailable) for warm-up.
+			var bg []int16
+			if len(evalPCM) > 0 {
+				bg = evalPCM[0]
+			}
+			prefix := segment(rng, bg, preCtxSamp)
+			pcm = append(prefix, pcm...)
+			pcm = append(pcm, make([]int16, postSamp)...)
+			start += preCtxSamp
+			end += preCtxSamp
+		case pastFalse:
+			pcm = append(segment(rng, backgrounds[0], preCtxSamp), pcm...)
+			start = preCtxSamp
 		}
+		signals[i] = signal{Embed(f, pcm), start, end}
 		mu.Lock()
 		done++
-		progress("embed", float64(done)/float64(len(streams)))
+		progress("embed", float64(done)/float64(len(jobs)))
 		mu.Unlock()
 	})
 
 	var pos, negs []Sample
-	var testPos [][][]float32 // per held-out signal: its hit windows
-	for i, s := range sigs {
-		st := streams[i]
-		var hits [][]float32
-		for e := Ctx - 1; e < st.Len(); e++ {
-			end := EmbEnd(e)
-			switch {
-			case end >= s.end && end <= s.end+posSlack:
-				hits = append(hits, st.Window(e))
-			case end <= preCtxSamp && !s.test && e%2 == 0:
-				// Ends before the word starts: background or the user's
-				// speech only.
-				negs = append(negs, Sample{st.Window(e), 0})
-			}
-		}
-		if s.test {
-			testPos = append(testPos, hits)
+	syntheticPos := make([][]Sample, len(synthetic))
+	var validation []validationTake
+	var evalStreams []Stream
+	var regressionStreams []Stream
+	for i, j := range jobs {
+		s := signals[i]
+		switch j.kind {
+		case positiveCheck:
+			validation = append(validation, validationTake{s.stream, s.start, s.end})
+			continue
+		case negativeCheck:
+			evalStreams = append(evalStreams, s.stream)
 			continue
 		}
-		for _, h := range hits {
-			pos = append(pos, Sample{h, 1})
+		if j.kind == pastFalse || (j.kind == negativeTrain && j.weight > 1) {
+			regressionStreams = append(regressionStreams, s.stream)
 		}
-	}
-
-	// User streams: 80% train, last 20% evaluation. Bundled streams: 75/25.
-	var evalStreams []Stream
-	split := func(s Stream, frac float64) {
-		cut := int(float64(s.Len()) * frac)
-		for _, w := range Stream(s[:cut*EmbDim]).Windows(1) {
-			negs = append(negs, Sample{w, 0})
-		}
-		evalStreams = append(evalStreams, s[cut*EmbDim:])
-	}
-	split(streams[len(sigs)], 0.8)
-	split(streams[len(sigs)+1], 0.8)
-	for _, st := range streams[falseAt:] {
-		for e := Ctx - 1; e < st.Len(); e++ {
-			if EmbEnd(e) > preCtxSamp {
-				for range 4 { // exact past mistakes: weigh them up
-					negs = append(negs, Sample{st.Window(e), 0})
+		for e := Ctx - 1; e < s.stream.Len(); e++ {
+			end := EmbEnd(e)
+			sample := Sample{X: s.stream.Window(e), Source: i + 1, Frame: e}
+			if j.kind == positiveTrain || j.kind == syntheticTrain {
+				switch {
+				case end >= s.end && end <= s.end+posSlack:
+					sample.Y = 1
+					if j.kind == syntheticTrain {
+						syntheticPos[j.syntheticSource] = append(syntheticPos[j.syntheticSource], sample)
+					} else {
+						pos = append(pos, sample)
+					}
+				case end <= s.start && e%2 == 0:
+					if j.kind == positiveTrain {
+						negs = append(negs, sample)
+					}
+				}
+			} else if j.kind != pastFalse || end > s.start {
+				for range j.weight {
+					negs = append(negs, sample)
 				}
 			}
 		}
 	}
+	syntheticWindows, usedSynthetic := limitSynthetic(syntheticPos, len(pos))
+	pos = append(pos, syntheticWindows...)
+	usedSyntheticClips := make([][]int16, 0, len(usedSynthetic))
+	for _, source := range usedSynthetic {
+		usedSyntheticClips = append(usedSyntheticClips, synthetic[source])
+	}
 	userNeg := len(negs)
-	for _, w := range neg.Windows {
-		negs = append(negs, Sample{w, 0})
+	for _, window := range neg.Windows {
+		negs = append(negs, Sample{X: window})
 	}
-	for _, s := range neg.Streams {
-		split(s, 0.75)
+	trainStreams, checkStreams := splitTakeIndices(len(neg.Streams), seed^0x73747265616d73)
+	if len(neg.Streams) == 1 {
+		trainStreams, checkStreams = nil, []int{0}
 	}
-	if len(pos) == 0 {
-		return nil, errors.New("kws: no positive windows")
+	for _, i := range trainStreams {
+		stream := neg.Streams[i]
+		for e := Ctx - 1; e < stream.Len(); e++ {
+			negs = append(negs, Sample{X: stream.Window(e), Source: len(jobs) + i + 1, Frame: e})
+		}
 	}
-
-	cfg := TrainConfig{
-		Seed:      seed,
-		Epochs:    40,
-		NegPerEp:  max(4*len(pos), 6000),
-		PosWeight: 2,
-		OnProgress: func(ep int, _ float64) {
-			progress("train", float64(ep)/40)
-		},
+	for _, i := range checkStreams {
+		evalStreams = append(evalStreams, neg.Streams[i])
 	}
-	// Room and own-speech windows are the false alarms that matter most;
-	// make them as likely per epoch as the whole bundled set.
+	if len(pos) == 0 || len(validation) == 0 {
+		return nil, errors.New("kws: no independent positive validation")
+	}
+	var exposure int
+	for _, stream := range evalStreams {
+		exposure += max(0, stream.Len()-Ctx+1)
+	}
+	if exposure < Consecutive {
+		return nil, errors.New("kws: no independent background validation")
+	}
 	weighted := append([]Sample(nil), negs...)
 	for range max(1, (len(negs)-userNeg)/max(userNeg, 1)/2) {
 		weighted = append(weighted, negs[:userNeg]...)
 	}
-	head, err := Train(pos, weighted, cfg)
+	bestMetric := math.Inf(1)
+	bestEpoch := 0
+	head, err := Train(pos, weighted, TrainConfig{
+		Seed: seed, Epochs: 40, NegPerEp: max(4*len(pos), 6000), PosWeight: 2,
+		Validate: func(epoch int, head *Head) float64 {
+			metric := validateHead(head, validation, evalStreams, regressionStreams).metric()
+			if metric < bestMetric {
+				bestMetric, bestEpoch = metric, epoch
+			}
+			return metric
+		},
+		OnProgress: func(epoch int, _ float64) { progress("train", float64(epoch)/40) },
+	})
 	if err != nil {
 		return nil, err
 	}
-
 	progress("calibrate", 0)
-	m := &Model{Name: name, Created: time.Now().UTC(), Takes: len(words), Head: head, TrainNotes: notes}
-	// A held-out take counts as found if some pair of consecutive windows
-	// both pass, which is what the gate needs.
-	maxPos := make([]float32, len(testPos))
-	for i, hs := range testPos {
-		for j := 1; j < len(hs); j++ {
-			maxPos[i] = max(maxPos[i], min(head.Score(hs[j-1]), head.Score(hs[j])))
-		}
+	c := validateHead(head, validation, evalStreams, regressionStreams)
+	if err := trainingQualityError(c, originalTakeIndices, checkTakes, seed); err != nil {
+		return nil, err
 	}
-	scores := make([][]float32, len(evalStreams))
-	var embs int
-	for i, s := range evalStreams {
-		for e := Ctx - 1; e < s.Len(); e++ {
-			scores[i] = append(scores[i], head.Score(s.Window(e)))
-		}
-		embs += s.Len()
+	if c.Recall < 0.8 {
+		notes = append(notes, "Не все проверочные записи распознаны. Добавьте примеры с разных мест комнаты через «Не узнала?».")
 	}
-	m.EvalHours = float64(embs) * float64(StepSamp) / SampleRate / 3600
-	triggers := func(t float32) int {
-		n := 0
-		for _, sc := range scores {
-			var g gate
-			for _, v := range sc {
-				if g.step(v, t) {
-					n++
-				}
-			}
-		}
-		return n
+	if len(validation) < 3 {
+		notes = append(notes, "Проверочных произнесений пока мало. Больше записей с разных мест комнаты сделают проверку надёжнее.")
 	}
-	recall := func(t float32) float64 {
-		k := 0
-		for _, v := range maxPos {
-			if v >= t {
-				k++
-			}
-		}
-		return float64(k) / float64(len(maxPos))
+	m := &Model{
+		Name: name, Created: time.Now().UTC(), Takes: len(takes), Head: head, TrainNotes: notes,
+		Threshold: c.Threshold, Recall: c.Recall, FalsePerH: float64(c.FalseTriggers) / c.EvalHours,
+		EvalHours: c.EvalHours, EvalTakes: len(validation), DetectedTakes: c.Detected,
+		FalseTriggers: c.FalseTriggers, BestEpoch: bestEpoch, Seed: seed, ValidationVersion: 1,
+		SyntheticTakes: len(usedSyntheticClips), SyntheticDigest: syntheticDigest(usedSyntheticClips),
 	}
-	// Lowest threshold without false triggers on held-out data, plus margin.
-	// Scores of a real word saturate near 1, so the floor costs little recall
-	// and keeps a model that saw too few hard negatives from firing on noise.
-	thr := float32(0.98)
-	for t := float32(0.30); t <= 0.98; t += 0.02 {
-		if triggers(t) == 0 {
-			thr = t
-			break
-		}
-	}
-	m.Threshold = min(0.97, max(0.8, thr+0.05))
-	m.Recall = recall(m.Threshold)
-	m.FalsePerH = float64(triggers(m.Threshold)) / max(m.EvalHours, 1e-9)
 	progress("calibrate", 1)
 	return m, nil
 }
