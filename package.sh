@@ -70,8 +70,10 @@ run_yam() {
         yam --platform "$PLATFORM" --profiles /profiles --root /work/sandbox "$@"
 }
 
-# Packed source: yam.yaml with the release version, the built binary and data.
-sed "s/^version: .*/version: $VERSION/" yam.yaml > "$work/yam.yaml"
+# Packed source: yam.yaml with the release version. The GitHub artifact is one
+# universal package (target: any, arch: aarch64): the binary is the same static
+# musl build on every Buildroot station. Registry uploads stay per-target.
+sed -e "s/^version: .*/version: $VERSION/" -e "s/^targets: .*/targets: [any]/" yam.yaml > "$work/yam.yaml"
 cp -R dist "$work/dist"
 mkdir -p "$work/station"
 cp station/S97wakeword "$work/station/S97wakeword"

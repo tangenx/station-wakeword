@@ -40,11 +40,14 @@ yam --platform <профиль> install tangenx/wakeword
 ```
 
 Профиль - id станции из [PLATFORMS](https://github.com/nyakokitsu/yam/blob/main/docs/PLATFORMS.md).
-Можно и локальным файлом из релиза на GitHub:
+
+Можно и локальным файлом из релиза на GitHub — он один для всех aarch64-платформ (`target: any`, бинарь общий):
 
 ```sh
-yam --platform <профиль> install --yes wakeword-<версия>-<профиль>.yampkg
+yam --platform <профиль> install --yes wakeword-<версия>.yampkg
 ```
+
+Для `yandexmicro`, `yandexmidi`, `bergamot`, `pickle`, `cucumber`, `plum`, `orion`, `yandexmini_2`, `yandexmini`, `yandexstation` подходит один и тот же файл. Для armv7-станций (Стрит, JBL) бинаря нет.
 
 Пакет кладёт бинарь, init-скрипт и `negatives.bin` (≈17 МБ) в
 `/data/yam/share/tangenx.wakeword/`; слова и настройки остаются в
