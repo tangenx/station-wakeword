@@ -20,27 +20,36 @@ import (
 var indexHTML []byte
 
 type wordView struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Enabled     bool      `json:"enabled"`
-	Sensitivity float32   `json:"sensitivity"`
-	Threshold   float32   `json:"threshold"`
-	Recall      float64   `json:"recall"`
-	FalsePerH   float64   `json:"false_per_h"`
-	Takes       int       `json:"takes"`
-	FalseClips  int       `json:"false_clips"`
-	Created     time.Time `json:"created"`
-	Score       float32   `json:"score"`
-	Actions     []string  `json:"actions,omitempty"`
-	Notes       []string  `json:"notes,omitempty"`
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	Enabled           bool      `json:"enabled"`
+	Sensitivity       float32   `json:"sensitivity"`
+	Threshold         float32   `json:"threshold"`
+	Recall            float64   `json:"recall"`
+	FalsePerH         float64   `json:"false_per_h"`
+	EvalHours         float64   `json:"eval_hours,omitzero"`
+	EvalTakes         int       `json:"eval_takes,omitzero"`
+	DetectedTakes     int       `json:"detected_takes,omitzero"`
+	FalseTriggers     int       `json:"false_triggers,omitzero"`
+	ValidationVersion int       `json:"validation_version,omitzero"`
+	Takes             int       `json:"takes"`
+	FalseClips        int       `json:"false_clips"`
+	Created           time.Time `json:"created"`
+	Score             float32   `json:"score"`
+	Actions           []string  `json:"actions,omitempty"`
+	Notes             []string  `json:"notes,omitempty"`
 }
 
 type enrollView struct {
-	Name       string    `json:"name"`
-	Takes      []float64 `json:"takes"` // detected word length per take
-	HasAmbient bool      `json:"has_ambient"`
-	SpeechSecs float64   `json:"speech_secs"`
-	MinTakes   int       `json:"min_takes"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Takes         []float64 `json:"takes"` // detected word length per take
+	TakesChanged  bool      `json:"takes_changed,omitzero"`
+	AliceTTS      bool      `json:"alice_tts"`
+	HasAmbient    bool      `json:"has_ambient"`
+	SpeechSecs    float64   `json:"speech_secs"`
+	ConfuserClips int       `json:"confuser_clips,omitzero"`
+	MinTakes      int       `json:"min_takes"`
 }
 
 type stateView struct {
@@ -76,6 +85,8 @@ func (d *Daemon) state() stateView {
 		v.Words = append(v.Words, wordView{
 			ID: w.ID, Name: w.Model.Name, Enabled: s != nil && s.Enabled, Sensitivity: s.Sensitivity,
 			Threshold: w.Model.Threshold, Recall: w.Model.Recall, FalsePerH: w.Model.FalsePerH,
+			EvalHours: w.Model.EvalHours, EvalTakes: w.Model.EvalTakes, DetectedTakes: w.Model.DetectedTakes,
+			FalseTriggers: w.Model.FalseTriggers, ValidationVersion: w.Model.ValidationVersion,
 			Takes: w.Model.Takes, FalseClips: len(falses), Created: w.Model.Created,
 			Score: scores[w.ID], Notes: w.Model.TrainNotes, Actions: d.actionsFor(w.ID),
 		})
@@ -85,8 +96,8 @@ func (d *Daemon) state() stateView {
 		v.Hits[len(d.hits)-1-i] = h // newest first
 	}
 	if e := d.enroll; e != nil {
-		ev := &enrollView{Name: e.Name, HasAmbient: len(e.Ambient) > 0, MinTakes: minTakes,
-			SpeechSecs: float64(len(e.Speech)) / kws.SampleRate, Takes: []float64{}}
+		ev := &enrollView{ID: e.ID, Name: e.Name, HasAmbient: len(e.Ambient) > 0, MinTakes: minTakes,
+			SpeechSecs: float64(len(e.Speech)) / kws.SampleRate, ConfuserClips: len(e.Confusers), Takes: []float64{}, TakesChanged: e.TakesChanged, AliceTTS: e.AliceTTS}
 		for _, t := range e.Takes {
 			s, end, _ := kws.FindSpeech(t)
 			ev.Takes = append(ev.Takes, float64(end-s)/kws.SampleRate)
@@ -224,6 +235,56 @@ func (d *Daemon) Handler() http.Handler {
 		}
 		writeJSON(w, d.state().Enroll)
 	})
+	mux.HandleFunc("POST /api/train/resume", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := d.resumeTraining(); err != nil {
+			httpErr(w, err)
+			return
+		}
+		writeJSON(w, d.state().Enroll)
+	})
+	mux.HandleFunc("POST /api/enroll/options", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			AliceTTS *bool `json:"alice_tts"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpErr(w, err)
+			return
+		}
+		d.mu.Lock()
+		switch {
+		case req.AliceTTS == nil:
+			d.mu.Unlock()
+			httpErr(w, errors.New("укажите, дополнять ли записи голосом Алисы"))
+			return
+		case d.enroll == nil || d.train.Active:
+			d.mu.Unlock()
+			httpErr(w, errors.New("сначала откройте запись слова"))
+			return
+		}
+		d.enroll.AliceTTS = *req.AliceTTS
+		d.mu.Unlock()
+		writeJSON(w, d.state().Enroll)
+	})
+	backgroundAudio := func(w http.ResponseWriter, r *http.Request) {
+		d.mu.Lock()
+		var pcm []int16
+		if d.enroll != nil {
+			if r.URL.Path == "/api/enroll/ambient" {
+				pcm = d.enroll.Ambient
+			} else {
+				pcm = d.enroll.Speech
+			}
+		}
+		d.mu.Unlock()
+		if len(pcm) == 0 {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		w.Write(wav.Encode(pcm, kws.SampleRate))
+	}
+	mux.HandleFunc("GET /api/enroll/ambient", backgroundAudio)
+	mux.HandleFunc("GET /api/enroll/speech", backgroundAudio)
 	mux.HandleFunc("POST /api/enroll/cancel", func(w http.ResponseWriter, r *http.Request) {
 		d.endEnroll()
 		writeJSON(w, map[string]bool{"ok": true})
@@ -280,6 +341,41 @@ func (d *Daemon) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, map[string]float64{"level": level})
+	})
+	mux.HandleFunc("POST /api/enroll/confuser", func(w http.ResponseWriter, r *http.Request) {
+		level, err := d.recordConfuser(r.Context())
+		if err != nil {
+			httpErr(w, err)
+			return
+		}
+		writeJSON(w, map[string]float64{"level": level})
+	})
+	mux.HandleFunc("DELETE /api/enroll/confuser/{i}", func(w http.ResponseWriter, r *http.Request) {
+		i, err := strconv.Atoi(r.PathValue("i"))
+		if err != nil {
+			httpErr(w, errors.New("нет такой записи"))
+			return
+		}
+		if err := d.deleteConfuser(i); err != nil {
+			httpErr(w, err)
+			return
+		}
+		writeJSON(w, d.state().Enroll)
+	})
+	mux.HandleFunc("GET /api/enroll/confuser/{i}", func(w http.ResponseWriter, r *http.Request) {
+		i, err := strconv.Atoi(r.PathValue("i"))
+		d.mu.Lock()
+		var pcm []int16
+		if err == nil && d.enroll != nil && i >= 0 && i < len(d.enroll.Confusers) {
+			pcm = d.enroll.Confusers[i]
+		}
+		d.mu.Unlock()
+		if pcm == nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		w.Write(wav.Encode(pcm, kws.SampleRate))
 	})
 	mux.HandleFunc("POST /api/enroll/train", func(w http.ResponseWriter, r *http.Request) {
 		if err := d.finishEnroll(); err != nil {

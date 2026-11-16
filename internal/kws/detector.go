@@ -55,6 +55,15 @@ func NewDetector(models []*Model, sensitivity []float32) (*Detector, error) {
 	}, nil
 }
 
+// ResetDecisionState clears consecutive-window counts, cooldowns and displayed
+// scores while retaining warmed audio features and the embedding history.
+// Offline evaluation uses it after a synthetic silence prefix so a discarded
+// warmup activation cannot suppress real detections in the recording.
+func (d *Detector) ResetDecisionState() {
+	clear(d.gates)
+	clear(d.Scores)
+}
+
 // Push feeds audio; hit is called with the model index for each detection.
 func (d *Detector) Push(pcm []int16, hit func(i int, score float32)) {
 	d.feat.Push(pcm, func(e []float32) {
@@ -62,7 +71,9 @@ func (d *Detector) Push(pcm []int16, hit func(i int, score float32)) {
 		copy(d.ring[(Ctx-1)*EmbDim:], e)
 		if d.have < Ctx {
 			d.have++
-			return
+			if d.have < Ctx {
+				return
+			}
 		}
 		for i, m := range d.models {
 			s := m.Head.Score(d.ring)

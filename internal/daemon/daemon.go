@@ -72,6 +72,7 @@ type Daemon struct {
 	audioPort   int
 	alicedPort  int
 	startListen func(word string) error
+	synthesize  func(context.Context, string) ([]int16, error)
 
 	mu       sync.Mutex
 	settings Settings
@@ -114,13 +115,21 @@ func (d *Daemon) stationName() string {
 }
 
 type trainState struct {
-	Active bool    `json:"active"`
-	Word   string  `json:"word,omitempty"` // id
-	Name   string  `json:"name,omitempty"`
-	Stage  string  `json:"stage,omitempty"`
-	Frac   float64 `json:"frac"`
-	Error  string  `json:"error,omitempty"`
-	Done   string  `json:"done,omitempty"` // id of the last trained word
+	Active   bool           `json:"active"`
+	Word     string         `json:"word,omitempty"` // id
+	Name     string         `json:"name,omitempty"`
+	Stage    string         `json:"stage,omitempty"`
+	Note     string         `json:"note,omitempty"`
+	Frac     float64        `json:"frac"`
+	Error    string         `json:"error,omitempty"`
+	Done     string         `json:"done,omitempty"` // id of the last trained word
+	Recovery *trainRecovery `json:"recovery,omitempty"`
+}
+
+type trainRecovery struct {
+	Code          string `json:"code"`
+	TakeIndices   []int  `json:"take_indices,omitempty"` // zero-based indices in the saved enrollment
+	PreviousModel bool   `json:"previous_model"`
 }
 
 const ringSecs = 12

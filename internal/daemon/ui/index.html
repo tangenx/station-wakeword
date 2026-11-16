@@ -42,6 +42,9 @@
   .step.done { border-color: var(--ok); }
   .step.cur { border-color: var(--accent); }
   .reading { background: var(--bg); border-radius: 10px; padding: 10px 12px; font-size: 16px; }
+  .take.needs-check { outline: 2px solid var(--accent); }
+  .recovery ol { padding-left: 22px; margin: 8px 0; }
+  .recovery li { margin: 6px 0; }
   table { width:100%; border-collapse: collapse; font-size: 14px; }
   td { padding: 6px 4px; border-top: 1px solid var(--line); }
   input[type=range] { width: 160px; accent-color: var(--accent); }
@@ -71,15 +74,21 @@
 
   <div class="card" id="wizard" hidden>
     <div class="row"><h2 class="grow">Слово «<span id="wname"></span>»</h2><button id="wcancel">Отмена</button></div>
+    <div class="reading recovery" id="recoveryhint" hidden>
+      <b>Продолжим с сохранёнными записями</b>
+      <div id="enrollrecoverystatus" class="muted" style="margin-top:6px"></div>
+      <ol id="enrollrecoverysteps"></ol>
+    </div>
     <div class="steps">
       <div class="step" id="s-ambient">
         <b>1. Тишина в комнате</b>
         <div class="muted">8 секунд станция слушает обычный фон комнаты. Не говорите в это время (телевизор и музыку оставьте, если они обычно играют).</div>
-        <div class="row" style="margin-top:8px"><button id="ambbtn">Записать фон</button><span id="ambmsg" class="msg"></span></div>
+        <div class="row" style="margin-top:8px"><button id="ambbtn">Записать фон</button><button id="ambplay" data-play="/api/enroll/ambient" hidden>▶ Прослушать фон</button><span id="ambmsg" class="msg"></span></div>
       </div>
       <div class="step" id="s-takes">
         <b>2. Произнесите слово</b>
         <div class="muted">Нажмите «Записать» и после надписи «Говорите!» скажите слово один раз. Нужно минимум <span id="mintakes">6</span>, лучше 10–15: с разных мест комнаты, громче и тише, разными людьми.</div>
+        <div class="reading" id="missedhint" style="margin-top:8px" hidden>Повторите слово с того же места и с той же громкостью, при которых станция его пропустила. Прослушайте новую запись: оставьте только само слово, ошибочную запись удалите. Старые примеры сохранятся. Затем нажмите «Обучить».</div>
         <div class="row" style="margin-top:8px"><button class="primary big" id="takebtn">Записать</button><div class="say grow" id="say"></div></div>
         <div class="row"><span id="takemsg" class="msg"></span><button id="lastbtn" data-play="/api/enroll/take/last" title="Послушать последнюю запись" hidden>▶ послушать</button></div>
         <div class="takes" id="takes"></div>
@@ -88,11 +97,20 @@
         <b>3. Обычная речь (по желанию)</b>
         <div class="muted">20 секунд прочитайте вслух текст ниже. Так станция научится не путать слово с вашей обычной речью.</div>
         <div class="reading" style="margin-top:8px">Сегодня обещали тёплую погоду, поэтому мы решили погулять в парке. Вечером нужно купить хлеб, молоко и что-нибудь к чаю. Позвоню маме и спрошу, как у неё дела. Завтра рано вставать, так что лягу пораньше и почитаю книгу.</div>
-        <div class="row" style="margin-top:8px"><button id="speechbtn">Читать 20 секунд</button><span id="speechmsg" class="msg"></span></div>
+        <div class="row" style="margin-top:8px"><button id="speechbtn">Читать 20 секунд</button><button id="speechplay" data-play="/api/enroll/speech" hidden>▶ Прослушать речь</button><span id="speechmsg" class="msg"></span></div>
+        <details style="margin-top:12px">
+          <summary>Уточнить распознавание</summary>
+          <div class="muted" style="margin-top:8px">Если станция путает слово с похожими, запишите их или обычные фразы в течение 8 секунд. Само слово активации произносить нельзя. Можно сделать несколько записей; если случайно сказали его — удалите запись.</div>
+          <div class="row" style="margin-top:8px"><button id="confuserbtn">Записать похожие слова · 8 с</button><span id="confusermsg" class="msg"></span></div>
+          <div class="takes" id="confusers"></div>
+        </details>
       </div>
       <div class="step" id="s-train">
         <b>4. Обучение</b>
         <div class="muted">Модель обучается прямо на станции, около 2–3 минут. Страницу можно закрыть.</div>
+        <label class="switch" style="margin-top:8px"><input type="checkbox" id="alicetts"> Дополнить голосом Алисы</label>
+        <div class="stats">Нужен интернет: слово отправляется в Яндекс. Голосовые записи остаются на станции. Для обучения нужны минимум 6 ваших записей.</div>
+        <div class="stats" id="enrollttsnote" style="margin-top:6px" hidden></div>
         <div class="row" style="margin-top:8px"><button class="primary" id="trainbtn">Обучить</button><span id="trainmsg" class="msg"></span></div>
       </div>
     </div>
@@ -102,6 +120,12 @@
     <h2>Обучение «<span id="tword"></span>»</h2>
     <div class="meter"><i id="tbar"></i></div>
     <div class="stats" id="tstage" style="margin-top:6px"></div>
+    <div class="stats" id="tnote" style="margin-top:6px" hidden></div>
+    <div class="recovery" id="trainrecovery" hidden>
+      <p id="trainrecoverystatus" class="muted"></p>
+      <ol id="trainrecoverysteps"></ol>
+      <button class="primary" id="resumetrainbtn" style="margin-top:8px">Исправить записи</button>
+    </div>
   </div>
 
   <div class="card">
@@ -128,6 +152,45 @@ async function api(method, path, body) {
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 function pct(x) { return Math.round(x * 100) + "%"; }
 function msg(el, text, kind) { el.textContent = text || ""; el.className = "msg " + (kind || ""); }
+function validationText(w) {
+  if (w.validation_version !== 1) return "старая оценка качества — переобучите для новой проверки";
+  const sensitivity = w.sensitivity ? "при обычной чувствительности" : "при обучении";
+  const takes = w.eval_takes ? `слово ${w.detected_takes || 0} из ${w.eval_takes}` : "слово не проверено";
+  const background = w.eval_hours > 0 ? `ложных ${w.false_triggers || 0} за ${(w.eval_hours * 60).toFixed(1)} мин фона` : "фон не проверен";
+  return `проверка ${sensitivity}: ${takes}; ${background}`;
+}
+
+function trainingRecovery(s) {
+  const t = s.train, r = t.recovery || {};
+  const previous = typeof r.previous_model === "boolean" ? r.previous_model : s.words.some(w => w.id === t.word);
+  const status = (previous ? "Прежняя модель сохранена и не заменена." : "Слово пока не включено.") + " Все записи сохранены; начинать заново не нужно.";
+  const changed = s.enroll?.id === t.word && s.enroll.takes_changed;
+  const takes = !changed && Array.isArray(r.take_indices) ? r.take_indices.filter(i => Number.isInteger(i) && i >= 0) : [];
+  if (r.code === "word_not_recognized") {
+    const labels = takes.map(i => "№" + (i + 1)).join(", ");
+    return { status, takes, focus: "s-takes", steps: [
+      labels ? `Прослушайте записи ${labels} кнопкой ▶ — они не прошли проверку.` : "Прослушайте записи слова кнопкой ▶.",
+      "Если запись обрезана или содержит не то слово, удалите её и запишите заново. Если слово слышно целиком, оставьте запись.",
+      "Добавьте 2–3 произнесения с разных мест комнаты и нажмите «Обучить». Остальные записи и фон уже сохранены."
+    ]};
+  }
+  if (r.code === "background_confusion") return { status, takes: [], focus: "s-speech", steps: [
+    `Прослушайте фон, обычную речь и записи похожих слов. Если в них есть «${t.name || t.word}», перезапишите фон или речь либо удалите эту запись похожих слов.`,
+    "Добавьте 2–3 чётких произнесения слова. Если станция путает его с конкретной фразой, запишите её без слова активации в «Уточнить распознавание».",
+    "Нажмите «Обучить». Заново записывать все примеры не требуется."
+  ]};
+  return { status, takes: [], focus: "s-takes", steps: [
+    "Сохранённые записи можно прослушать, дополнить или исправить.",
+    "Если сообщение указывает на нехватку места или недоступный файл, сначала устраните эту причину. Затем нажмите «Обучить»."
+  ]};
+}
+
+function renderRecovery(prefix, advice) {
+  $(prefix + "recoverystatus").textContent = advice.status;
+  const html = advice.steps.map(step => `<li>${esc(step)}</li>`).join("");
+  const box = $(prefix + "recoverysteps");
+  if (box.innerHTML !== html) box.innerHTML = html;
+}
 
 function renderWords(s) {
   const box = $("words");
@@ -149,13 +212,14 @@ function renderWords(s) {
       <div class="meter" style="margin:12px 0 6px" title="Уверенность сейчас; отметка — порог срабатывания">
         <i data-meter="${w.id}" style="width:${pct(w.score)}"></i><b style="left:${pct(thr)}"></b></div>
       <div class="row">
-        <span class="stats grow">${w.takes} записей · проверка: узнаёт ${pct(w.recall)} · ложных ≈ ${w.false_per_h.toFixed(1)}/час${w.false_clips ? ` · отмечено ложных: ${w.false_clips}` : ""}</span>
+        <span class="stats grow">${w.takes} записей · ${validationText(w)}${w.false_clips ? ` · отмечено ложных: ${w.false_clips}` : ""}</span>
         <span class="stats">реже</span><input type="range" min="-0.3" max="0.3" step="0.05" value="${w.sensitivity}" data-sens="${w.id}"><span class="stats">чаще</span>
       </div>
       ${(w.actions || []).length ? `<div class="stats">при срабатывании: ${w.actions.map(a => ({alice: "Алиса слушает", webhook: "вебхук", exec: "скрипт"}[a] || esc(a))).join(" · ")}</div>` : `<div class="stats">при срабатывании: ничего (только запись в журнал)</div>`}
       ${(w.notes || []).length ? `<div class="stats">${w.notes.map(esc).join("<br>")}</div>` : ""}
       <div class="row" style="margin-top:10px">
         <button data-more="${esc(w.name)}">Дозаписать</button>
+        <button data-missed="${esc(w.name)}">Не узнала?</button>
         <button data-retrain="${w.id}">Переобучить</button>
         <span class="grow"></span>
         <button class="danger" data-del="${w.id}" data-name="${esc(w.name)}">Удалить</button>
@@ -176,6 +240,10 @@ function renderEnroll(s) {
   $("wizard").hidden = !e;
   $("newcard").hidden = !!e || s.train.active;
   if (!e) return;
+  const recovering = !s.train.active && !!s.train.error && e.id === s.train.word;
+  const advice = recovering ? trainingRecovery(s) : null;
+  $("recoveryhint").hidden = !recovering;
+  if (recovering) renderRecovery("enroll", advice);
   $("wname").textContent = e.name;
   $("mintakes").textContent = e.min_takes;
   $("s-ambient").className = "step " + (e.has_ambient ? "done" : "cur");
@@ -183,24 +251,40 @@ function renderEnroll(s) {
   $("s-speech").className = "step " + (e.speech_secs > 0 ? "done" : "");
   $("s-train").className = "step " + (e.takes.length >= e.min_takes && e.has_ambient ? "cur" : "");
   $("trainbtn").disabled = busy || e.takes.length < e.min_takes || !e.has_ambient;
+  $("alicetts").checked = !!e.alice_tts;
+  $("alicetts").disabled = busy;
+  $("enrollttsnote").textContent = recovering ? s.train.note || "" : "";
+  $("enrollttsnote").hidden = !$("enrollttsnote").textContent;
   if (e.has_ambient && !$("ambmsg").textContent) msg($("ambmsg"), "записано", "ok");
   if (e.speech_secs > 0 && !$("speechmsg").textContent) msg($("speechmsg"), "записано", "ok");
-  $("takes").innerHTML = e.takes.map((d, i) => `<span class="take">#${i + 1} ${d.toFixed(2)} с
+  $("ambplay").hidden = !e.has_ambient;
+  $("speechplay").hidden = !(e.speech_secs > 0);
+  $("takes").innerHTML = e.takes.map((d, i) => `<span class="take${advice?.takes.includes(i) ? " needs-check" : ""}">${advice?.takes.includes(i) ? "Проверить " : ""}#${i + 1} ${d.toFixed(2)} с
      <button title="Послушать" data-play="/api/enroll/take/${i}">▶</button>
      <button title="Удалить" data-deltake="${i}">✕</button></span>`).join("");
-  for (const b of ["ambbtn", "takebtn", "speechbtn"]) $(b).disabled = busy;
+  $("confusers").innerHTML = Array.from({length: e.confuser_clips || 0}, (_, i) => `<span class="take">Похожие слова #${i + 1}
+     <button title="Послушать" data-play="/api/enroll/confuser/${i}">▶</button>
+     <button title="Удалить" data-delconfuser="${i}">✕</button></span>`).join("");
+  for (const b of ["ambbtn", "takebtn", "speechbtn", "confuserbtn"]) $(b).disabled = busy;
 }
 
 function renderTrain(s) {
   const t = s.train;
-  $("traincard").hidden = !t.active && !t.error;
-  if (!t.active && !t.error) return;
+  const recovering = s.enroll && s.enroll.id === t.word;
+  $("traincard").hidden = (!t.active && !t.error) || (!!t.error && recovering);
+  if ($("traincard").hidden) return;
+  $("trainrecovery").hidden = !t.error;
+  $("tbar").parentElement.hidden = !!t.error;
   $("tword").textContent = t.name || t.word;
-  const stages = { load: [0, 0.02], embed: [0.02, 0.45], train: [0.45, 0.95], calibrate: [0.95, 1] };
+  const stages = { load: [0, 0.02], synthesize: [0.02, 0.08], embed: [0.08, 0.45], train: [0.45, 0.95], calibrate: [0.95, 1] };
   const [a, b] = stages[t.stage] || [0, 1];
   $("tbar").style.width = pct(a + (b - a) * t.frac);
-  const names = { load: "загрузка", embed: "обработка записей", train: "обучение", calibrate: "проверка" };
+  const names = { load: "загрузка", synthesize: "подготовка записей Алисы", embed: "обработка записей", train: "обучение", calibrate: "проверка" };
   $("tstage").textContent = t.error ? "Ошибка: " + t.error : (names[t.stage] || t.stage) + "…";
+  $("tnote").textContent = t.note || "";
+  $("tnote").hidden = !t.note;
+  if (t.error) renderRecovery("train", trainingRecovery(s));
+  $("resumetrainbtn").disabled = busy || t.active || !t.word || (!!s.enroll && s.enroll.id !== t.word);
 }
 
 async function refresh() {
@@ -233,11 +317,18 @@ async function run(btn, fn) {
 }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+async function openEnrollment(name, missed = false) {
+  msg($("ambmsg"), ""); msg($("speechmsg"), ""); msg($("takemsg"), ""); msg($("confusermsg"), "");
+  $("say").textContent = ""; $("lastbtn").hidden = true; $("missedhint").hidden = !missed;
+  await api("POST", "/api/enroll/start", { name });
+  await refresh();
+  if (missed) $("s-takes").scrollIntoView({block: "center"});
+}
+
 $("newbtn").onclick = () => run(null, async () => {
   const name = prompt("Какое слово будет звать станцию? Например: Джарвис, Компьютер, Станция");
   if (!name) return;
-  msg($("ambmsg"), ""); msg($("speechmsg"), ""); msg($("takemsg"), ""); $("say").textContent = "";
-  await api("POST", "/api/enroll/start", { name: name.trim() });
+  await openEnrollment(name.trim());
 });
 $("wcancel").onclick = () => run(null, async () => { if (confirm("Бросить запись этого слова?")) await api("POST", "/api/enroll/cancel"); });
 $("ambbtn").onclick = () => run($("ambbtn"), async () => {
@@ -259,14 +350,29 @@ $("speechbtn").onclick = () => run($("speechbtn"), async () => {
   await api("POST", "/api/enroll/speech?secs=20");
   msg($("speechmsg"), "записано", "ok");
 });
+$("confuserbtn").onclick = () => run($("confuserbtn"), async () => {
+  msg($("confusermsg"), "говорите похожие слова… 8 секунд");
+  await api("POST", "/api/enroll/confuser");
+  msg($("confusermsg"), "записано; прослушайте и удалите, если сказали слово активации", "ok");
+});
 $("trainbtn").onclick = () => run($("trainbtn"), async () => {
   await api("POST", "/api/enroll/train");
   msg($("trainmsg"), "обучение началось");
+});
+$("resumetrainbtn").onclick = () => run($("resumetrainbtn"), async () => {
+  const advice = trainingRecovery(state);
+  msg($("ambmsg"), ""); msg($("speechmsg"), ""); msg($("takemsg"), ""); msg($("confusermsg"), "");
+  $("say").textContent = ""; $("lastbtn").hidden = true; $("missedhint").hidden = true;
+  await api("POST", "/api/train/resume");
+  await refresh();
+  if (advice.focus === "s-speech") $("s-speech").querySelector("details").open = true;
+  $(advice.focus).scrollIntoView({block: "center"});
 });
 $("listenbtn").onclick = () => run($("listenbtn"), () => api("POST", "/api/listen"));
 
 document.addEventListener("change", (ev) => {
   const t = ev.target;
+  if (t.id === "alicetts") run(t, () => api("POST", "/api/enroll/options", { alice_tts: t.checked }));
   if (t.dataset.enable) run(null, () => api("POST", "/api/words/" + t.dataset.enable, { enabled: t.checked }));
   if (t.dataset.sens) run(null, async () => { await api("POST", "/api/words/" + t.dataset.sens, { sensitivity: parseFloat(t.value) }); t.blur(); });
 });
@@ -276,9 +382,11 @@ document.addEventListener("click", (ev) => {
   const ds = t.dataset;
   if (ds.play) new Audio(ds.play + "?t=" + Date.now()).play();
   if (ds.deltake) run(null, () => api("DELETE", "/api/enroll/take/" + ds.deltake));
+  if (ds.delconfuser) run(null, () => api("DELETE", "/api/enroll/confuser/" + ds.delconfuser));
   if (ds.false) run(null, () => api("POST", `/api/hits/${ds.false}/false`));
   if (ds.retrain) run(null, () => api("POST", `/api/words/${ds.retrain}/retrain`));
-  if (ds.more) run(null, () => api("POST", "/api/enroll/start", { name: ds.more }));
+  if (ds.more) run(null, () => openEnrollment(ds.more));
+  if (ds.missed) run(null, () => openEnrollment(ds.missed, true));
   if (ds.del && confirm(`Удалить слово «${ds.name}» со всеми записями?`)) run(null, () => api("DELETE", "/api/words/" + ds.del));
 });
 </script>

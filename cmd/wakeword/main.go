@@ -11,6 +11,7 @@ const usage = `usage:
   wakeword run [flags]        station daemon: detect words, web UI, training
   wakeword train [flags]      train a word from WAV files
   wakeword scan model.json... audio.wav
+  wakeword evaluate -model model.json -manifest evaluation.json
 `
 
 func main() {
@@ -31,6 +32,8 @@ func main() {
 		err = cmdTrain(os.Args[2:])
 	case "scan":
 		err = cmdScan(os.Args[2:])
+	case "evaluate":
+		err = cmdEvaluate(os.Args[2:])
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
